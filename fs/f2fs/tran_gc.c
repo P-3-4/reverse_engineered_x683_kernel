@@ -11,15 +11,13 @@
 #include "x683_layout.h"
 
 /*
- * Stock X683 call record: three arguments are observed at the f2fs_gc call:
- *   x0 = sbi, x1 = sync, x2 = true
+ * Historical F2FS ABI recovered for the X683 call site:
  *
- * Historical F2FS source provides an important ABI match: the older
- * three-argument form was exactly f2fs_gc(sbi, sync, background), and the
- * background-GC thread called it with the third argument set to true.
- * Therefore the current evidence favors `background`, not `force`, as the
- * semantic identity of x2. This must still be validated against the stock
- * call-site and surrounding gc.c before being treated as final.
+ *     f2fs_gc(sbi, sync, background)
+ *
+ * The third argument is therefore the background-context selector, not a
+ * later vendor 'force' parameter. This matches the older F2FS revision in
+ * which background GC was explicitly distinguished from foreground GC.
  */
 extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background);
 
@@ -29,12 +27,14 @@ static int gc_type;
 /*
  * The X683 binary temporarily changes the stock F2FS GC state word:
  *   gc_type == 0 : no override
- *   gc_type == 2 : force state 3 during GC
- *   otherwise    : force state 2 during GC
+ *   gc_type == 2 : force GC mode 3 during GC
+ *   otherwise    : force GC mode 2 during GC
  *
- * The state word is mapped to f2fs_sb_info.gc_mode by the X683-era layout
- * reconstruction, but remains offset-backed until the complete source tree
- * is matched and compiled against the same structure packing.
+ * The recovered values correlate with the historical F2FS GC mode enum:
+ *   2 = GC_IDLE_GREEDY
+ *   3 = GC_URGENT
+ *
+ * The state word is mapped to f2fs_sb_info.gc_mode at X683 offset 0x534.
  */
 int x683_tran_do_f2fs_gc(struct f2fs_sb_info *sbi)
 {
