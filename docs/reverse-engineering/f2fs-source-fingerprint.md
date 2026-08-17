@@ -2,7 +2,7 @@
 
 Target stock kernel: Linux 4.14.141+ / X683-H694.
 
-This document records the historical-source fingerprint currently established from the stock binary plus public F2FS references. Public source is a reference only; the stock binary remains authoritative.
+This document records the historical-source fingerprint established from the stock binary plus public F2FS references. Public source is a reference only; the stock binary remains authoritative.
 
 ## 1. GC ABI fingerprint
 
@@ -24,7 +24,7 @@ int f2fs_gc(struct f2fs_sb_info *sbi,
             unsigned int segno);
 ```
 
-Public historical Linux/Android-common F2FS trees contain this exact prototype and GC implementation pattern. The older implementation also resets `cur_victim_sec` after foreground GC and tracks `skipped_gc_rwsem` and `skipped_atomic_files` in the GC manager.
+Historical F2FS source contains this exact four-argument prototype. citeturn219284search2
 
 ## 2. GC-manager structure fingerprint
 
@@ -44,13 +44,15 @@ sbi + 0x564  migration_granularity
 sbi + 0x568  stat_info
 ```
 
-`gc_mutex @ 0x508` is directly proven by the stock Transsion GC thread materializing `sbi + 0x508` and passing it to `mutex_trylock()` / the corresponding unlock path. The remaining fields are independently supported by stock initialization/access patterns and historical source ordering.
+`gc_mutex @ 0x508` is directly proven by the stock Transsion GC thread materializing `sbi + 0x508` and passing it to `mutex_trylock()` / the corresponding unlock path. The other fields are independently supported by stock initialization/access patterns and historical source ordering.
+
+Historical Android/common 4.14 F2FS is especially relevant: the ASB-2018-11-05_4.14 history shows the same `gc_mutex`, `gc_thread`, `cur_victim_sec`, `gc_mode`, `next_victim_seg[2]`, `skipped_atomic_files[2]`, `skipped_gc_rwsem`, `gc_pin_file_threshold`, `max_victim_search`, and `migration_granularity` sequence. citeturn817993search1turn982538search0
 
 ## 3. Post-`stat_info` fingerprint
 
 The X683 stock configuration has `CONFIG_F2FS_STAT_FS=y`.
 
-In the historical F2FS generation that matches the X683 GC-manager sequence, `struct f2fs_sb_info` continues after `stat_info` as follows when `META_MAX == 4` and normal 64-bit alignment is respected:
+In the matching older F2FS generation, the `f2fs_sb_info` statistics block continues after `stat_info` as:
 
 ```text
 0x568  stat_info pointer
@@ -58,7 +60,7 @@ In the historical F2FS generation that matches the X683 GC-manager sequence, `st
 0x580  unsigned int segment_count[2]
 0x588  unsigned int block_count[2]
 0x590  atomic_t inplace_count
-0x594  alignment padding
+0x594  alignment padding on AArch64
 0x598  atomic64_t total_hit_ext
 0x5a0  atomic64_t read_hit_rbtree
 0x5a8  atomic64_t read_hit_largest
@@ -75,21 +77,11 @@ In the historical F2FS generation that matches the X683 GC-manager sequence, `st
 0x5dc  unsigned int other_skip_bggc
 ```
 
-This is a strong source fingerprint because later F2FS revisions inserted compression/statistics fields in this region, which would move the GC statistics offsets. The X683 offsets instead line up with the older layout containing `aw_cnt`, `vw_cnt`, `max_aw_cnt`, `max_vw_cnt`, then `bg_gc`, `io_skip_bggc`, and `other_skip_bggc`.
+The historical Android/common 4.14 maintenance history provides a particularly strong match: the ASB-2018-11-05_4.14 diff adds `meta_count[META_MAX]`, `io_skip_bggc`, and `other_skip_bggc` to `f2fs_sb_info`, and adds the matching statistics/update paths in `debug.c`/`f2fs.h`. citeturn982538search0
 
-Public Android/common and Linux F2FS references show this exact older ordering. Examples include Android/common `fs/f2fs/f2fs.h` revisions with:
+Other historical F2FS references independently show the exact `aw_cnt`, `vw_cnt`, `max_aw_cnt`, `max_vw_cnt`, `bg_gc`, `io_skip_bggc`, and `other_skip_bggc` ordering. citeturn817993search2turn817993search3
 
-```c
-atomic_t aw_cnt;
-atomic_t vw_cnt;
-atomic_t max_aw_cnt;
-atomic_t max_vw_cnt;
-int bg_gc;
-unsigned int io_skip_bggc;
-unsigned int other_skip_bggc;
-```
-
-and the same GC-manager sequence containing `gc_mutex`, `gc_thread`, `cur_victim_sec`, `gc_mode`, `next_victim_seg`, `skipped_atomic_files`, `skipped_gc_rwsem`, `gc_pin_file_threshold`, `max_victim_search`, `migration_granularity`, and `stat_info`.
+This is a strong source fingerprint because later F2FS revisions inserted compression/statistics fields in this area, which would move these offsets. citeturn219284search9turn217996search1
 
 ## 4. Current confidence of `0x5d4–0x5dc`
 
@@ -101,29 +93,23 @@ and the same GC-manager sequence containing `gc_mutex`, `gc_thread`, `cur_victim
 
 These names are **not yet binary-confirmed**. The remaining proof step is to locate stock X683 call sites that distinguish the increment/read semantics of the three counters.
 
-The important result is that the search space is now sharply constrained: a candidate F2FS source revision that includes later compression-stat fields before `bg_gc` cannot reproduce the X683 offsets without additional vendor changes, while the older layout reproduces them directly.
+## 5. Historical baseline narrowed
 
-## 5. Historical baseline direction
+The source search is now narrowed from generic `Linux 4.14` to the **older Android/common 4.14 F2FS generation**, with the ASB-2018-11-05_4.14 history as a particularly strong candidate baseline. That history also shows the same reservation-field additions (`unusable_block_count`, `nquota_files`) and GC/background-GC statistics that appear in the X683 binary. citeturn982538search0
 
-The best public baseline candidates are now late-4.14 F2FS trees containing:
+This does **not** prove that X683 was built from Android/common. Transsion/MediaTek changes and later backports are still expected. The proper conclusion is:
 
 ```text
-four-argument f2fs_gc()
-gc_mutex
-skipped_atomic_files[2]
-skipped_gc_rwsem
-gc_pin_file_threshold
-max_victim_search
-migration_granularity
-stat_info
-META_MAX == 4
-aw_cnt/vw_cnt/max_aw_cnt/max_vw_cnt
-bg_gc/io_skip_bggc/other_skip_bggc
+Android/common 4.14 historical F2FS
+            ↓
+      strong structural ancestor
+            ↓
+       MTK/Transsion changes
+            ↓
+       X683 stock binary
 ```
 
-This is a substantially better fingerprint than selecting a source tree from `Linux 4.14` alone.
-
-The final ancestor still requires function-level comparison of:
+The exact ancestor still requires function-level comparison of:
 
 ```text
 f2fs.h
@@ -131,22 +117,16 @@ gc.c
 gc.h
 segment.c
 super.c
+debug.c
 ```
 
-against the stock X683 implementation.
+against the stock implementation.
 
 ## 6. X683 binary authority
 
-The stock X683 kernel was built from a `kernel-4.14` tree and exposes the F2FS source-path strings:
+The stock X683 kernel was built from a `kernel-4.14` tree and exposes F2FS source-path strings for `f2fs.h`, `segment.h`, `segment.c`, and `super.c`.
 
-```text
-../../../../../../kernel-4.14/fs/f2fs/f2fs.h
-../../../../../../kernel-4.14/fs/f2fs/segment.h
-../../../../../../kernel-4.14/fs/f2fs/segment.c
-../../../../../../kernel-4.14/fs/f2fs/super.c
-```
-
-Its relevant configuration includes:
+Known stock configuration includes:
 
 ```text
 CONFIG_F2FS_FS=y
@@ -154,4 +134,4 @@ CONFIG_F2FS_STAT_FS=y
 CONFIG_F2FS_TRAN_GC=y
 ```
 
-The stock binary therefore remains the final authority for any vendor-specific divergence from public F2FS.
+The binary remains the final authority for every vendor-specific divergence from the public baseline.
