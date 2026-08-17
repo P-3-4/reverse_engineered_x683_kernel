@@ -9,10 +9,10 @@ This document records field mappings supported by the stock X683 binary and hist
 | X683 offset | Candidate field | Confidence |
 |---:|---|---|
 | `0x80` | `sm_info` | **confirmed** by multiple stock GC accesses |
-| `0x3d8` | `log_blocks_per_seg` | **confirmed** by stock `f2fs_gc()` |
-| `0x3dc` | `blocks_per_seg` | **confirmed** by stock `f2fs_gc()` |
-| `0x3e0` | `segs_per_sec` | **confirmed** by stock `f2fs_gc()` |
-| `0x408` | `user_block_count` | **confirmed** by stock GC geometry calculations |
+| `0x3d8` | `log_blocks_per_seg` | **confirmed by stock `f2fs_gc()`** |
+| `0x3dc` | `blocks_per_seg` | **confirmed by stock `f2fs_gc()`** |
+| `0x3e0` | `segs_per_sec` | **confirmed by stock `f2fs_gc()`** |
+| `0x408` | `user_block_count` | **confirmed by stock GC geometry calculations** |
 | `0x410` | `total_valid_block_count` | high structural match; additional direct call-site validation pending |
 | `0x418` | `discard_blks` | high structural match; additional direct call-site validation pending |
 | `0x420` | `last_valid_block_count` | high structural match; additional direct call-site validation pending |
@@ -33,6 +33,9 @@ This document records field mappings supported by the stock X683 binary and hist
 | `0x560` | `max_victim_search` | **confirmed structurally**; initialized to `0x1000` |
 | `0x564` | `migration_granularity` | **very strong structural match**; initialized from an X683 configuration value and directly read by GC |
 | `0x568` | `stat_info` pointer | **strong**; GC loads a 64-bit pointer here and updates statistics members through it |
+| `0x5d4` | `bg_gc` | **strong structural candidate; direct stock identity validation still pending** |
+| `0x5d8` | `io_skip_bggc` | **strong structural candidate; direct stock identity validation still pending** |
+| `0x5dc` | `other_skip_bggc` | **strong structural candidate; direct stock identity validation still pending** |
 
 ### Newly confirmed `gc_mutex @ 0x508`
 
@@ -62,8 +65,6 @@ The resulting sequence is:
 0x534  gc_mode
 ```
 
-This also explains the 0x20-byte gap from the mutex start to `gc_thread`; the exact kernel `struct mutex` size/alignment should still be verified against the X683 build configuration, but the field start itself is binary-confirmed.
-
 ### `0x528` GC-thread reconstruction
 
 The stock X683 GC initialization path allocates a GC-thread object, stores it at `sbi + 0x528`, then initializes its wait queue and launches the task. The object layout matches the historical 4.14 F2FS form:
@@ -79,8 +80,6 @@ The stock X683 GC initialization path allocates a GC-thread object, stores it at
 | `+0x30` | `gc_idle` |
 | `+0x34` | `gc_urgent` |
 | `+0x38` | `gc_wake` |
-
-This exact object pattern is also present in older public F2FS implementations, where the GC thread stores the task pointer, wait queue, four sleep timers, and the `gc_idle`/`gc_urgent`/`gc_wake` state words. citeturn9search11turn9search12
 
 ### Reservation-field detail
 
@@ -102,8 +101,6 @@ The X683 binary now strongly matches the historical sequence:
 0x564  migration_granularity
 0x568  stat_info
 ```
-
-This ordering is independently present in historical F2FS source. citeturn3search0turn3search4
 
 ## Historical source fingerprint
 
@@ -132,9 +129,64 @@ unsigned int migration_granularity;
 struct f2fs_stat_info *stat_info;
 ```
 
-The four-argument ABI is explicitly present in historical Android/common F2FS source. citeturn5search0turn10search0
+The four-argument ABI and the manager sequence are both present in historical Android/common F2FS source. The November 2018 Android/common merge also shows the surrounding `CONFIG_F2FS_STAT_FS` members discussed below. citeturn877109search0turn705608search2
 
-The X683 kernel's Linux version string is `4.14.141+`, and Android/common merged upstream Linux 4.14.141 into its Android 4.14 branch in August 2019. That makes the Android/common 4.14.141-era tree a strong historical baseline candidate, but **not yet the proven original X683 source**. The binary still has final authority. citeturn6search0
+## `stat_info` / post-`stat_info` structure fingerprint
+
+A useful new constraint comes from normal C alignment in the historical `struct f2fs_sb_info` when `CONFIG_F2FS_STAT_FS=y`.
+
+The stock X683 configuration has F2FS statistics enabled. In the historical source generation matching the X683 GC manager, the fields following `stat_info` are:
+
+```text
+sbi + 0x568  stat_info pointer
+sbi + 0x570  meta_count[4]
+sbi + 0x580  segment_count[2]
+sbi + 0x588  block_count[2]
+sbi + 0x590  inplace_count
+sbi + 0x594  padding for 64-bit alignment
+sbi + 0x598  total_hit_ext
+sbi + 0x5a0  read_hit_rbtree
+sbi + 0x5a8  read_hit_largest
+sbi + 0x5b0  read_hit_cached
+sbi + 0x5b8  inline_xattr
+sbi + 0x5bc  inline_inode
+sbi + 0x5c0  inline_dir
+sbi + 0x5c4  aw_cnt
+sbi + 0x5c8  vw_cnt
+sbi + 0x5cc  max_aw_cnt
+sbi + 0x5d0  max_vw_cnt
+sbi + 0x5d4  bg_gc
+sbi + 0x5d8  io_skip_bggc
+sbi + 0x5dc  other_skip_bggc
+```
+
+This alignment is exact: `META_MAX` is four entries in this F2FS generation, and `atomic64_t` members must begin on 8-byte boundaries. Historical Android/common source explicitly places `meta_count[META_MAX]`, `segment_count[2]`, `block_count[2]`, `inplace_count`, the extent-hit atomics, `inline_*`, atomic-write counters, `bg_gc`, `io_skip_bggc`, and `other_skip_bggc` in this order. citeturn705608search2turn877109search0
+
+Therefore the unresolved X683 offsets now have a strong structural explanation:
+
+```text
+0x5d4  -> bg_gc
+0x5d8  -> io_skip_bggc
+0x5dc  -> other_skip_bggc
+```
+
+This is **not yet promoted to binary-confirmed identity**. The remaining proof requirement is to find stock X683 call sites whose operation semantics distinguish the three counters. The structural match is nevertheless strong enough to guide that search and sharply narrows the historical source revision.
+
+### Why this matters for source identification
+
+The older Android/common F2FS history shows `bg_gc` and the two background-GC skip counters being added together with the corresponding statistics plumbing. That gives us a second fingerprint beyond the GC-manager fields:
+
+```text
+GC manager sequence
+        +
+CONFIG_F2FS_STAT_FS post-stat_info sequence
+        +
+f2fs_gc(sbi, sync, background, segno)
+        +
+X683 binary access pattern
+```
+
+A candidate source tree that matches all four is substantially stronger than one selected only from the Linux 4.14 version number. citeturn877109search0
 
 ## `struct f2fs_sm_info`
 
@@ -160,7 +212,7 @@ The stock Transsion GC thread dereferences `sbi + 0x80`, then `sm_info + 0x10`, 
 
 ## Unresolved vendor-specific counters
 
-The X683 binary accesses additional fields at `sbi + 0x5d4`, `0x5d8`, and `0x5dc`. Their exact identities are not being guessed. These remain vendor/GC counters until their common semantics are established.
+The only remaining uncertainty around the `0x5d4–0x5dc` region is now the direct stock semantic proof. Structurally these offsets line up with `bg_gc`, `io_skip_bggc`, and `other_skip_bggc`; until stock call sites distinguish their operations, they remain candidates rather than confirmed names.
 
 ## Confirmed GC ABI
 
@@ -177,9 +229,9 @@ The stock `f2fs_gc()` entry is at Image offset `0x3503a8`.
 
 ## Remaining work
 
-1. Map the `stat_info` structure reached through `sbi + 0x568`.
-2. Reconstruct the vendor-specific counters at `0x5d4/0x5d8/0x5dc`.
-3. Confirm `skipped_atomic_files[2]` by finding the stock counter reads/writes at both `0x540` and `0x548`.
+1. Find direct stock accesses that distinguish `0x5d4`, `0x5d8`, and `0x5dc` and promote the structural candidates to binary-confirmed names.
+2. Map the `f2fs_stat_info` object reached through `sbi + 0x568` by following the pointer and matching member offsets.
+3. Confirm `skipped_atomic_files[2]` by finding stock counter reads/writes at both `0x540` and `0x548`.
 4. Recover the remaining X683 `f2fs_gc()` victim-selection/accounting control flow.
-5. Identify the closest historical 4.14 F2FS revision by comparing complete `f2fs.h`, `gc.c`, `gc.h`, and `segment.c` behavior—not by kernel version alone.
+5. Identify the closest historical 4.14 F2FS revision by comparing complete `f2fs.h`, `gc.c`, `gc.h`, `segment.c`, and statistics plumbing—not by kernel version alone.
 6. Replace offset helpers with normal structure members only after the complete structure is proven against the selected source revision.
