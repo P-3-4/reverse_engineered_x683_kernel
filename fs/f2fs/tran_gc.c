@@ -14,11 +14,14 @@
  * Stock X683 call record: three arguments are observed at the f2fs_gc call:
  *   x0 = sbi, x1 = sync, x2 = true
  *
- * The semantic identity of the third parameter is vendor-specific and must
- * not be inferred from a newer public F2FS tree. Current reconstruction
- * treats it as the stock wrapper's force/override argument.
+ * Historical F2FS source provides an important ABI match: the older
+ * three-argument form was exactly f2fs_gc(sbi, sync, background), and the
+ * background-GC thread called it with the third argument set to true.
+ * Therefore the current evidence favors `background`, not `force`, as the
+ * semantic identity of x2. This must still be validated against the stock
+ * call-site and surrounding gc.c before being treated as final.
  */
-extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool force);
+extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background);
 
 /* Reconstructed Transsion GC mode selector. */
 static int gc_type;
