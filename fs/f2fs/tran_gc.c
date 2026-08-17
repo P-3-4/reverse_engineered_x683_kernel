@@ -10,7 +10,14 @@
 #include "f2fs.h"
 #include "x683_layout.h"
 
-/* Stock X683 F2FS entry point observed in the binary. */
+/*
+ * Stock X683 call record: three arguments are observed at the f2fs_gc call:
+ *   x0 = sbi, x1 = sync, x2 = true
+ *
+ * The semantic identity of the third parameter is vendor-specific and must
+ * not be inferred from a newer public F2FS tree. Current reconstruction
+ * treats it as the stock wrapper's force/override argument.
+ */
 extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool force);
 
 /* Reconstructed Transsion GC mode selector. */
