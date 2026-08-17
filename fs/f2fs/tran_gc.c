@@ -10,7 +10,7 @@
 #include "f2fs.h"
 #include "x683_layout.h"
 
-/* Stock F2FS entry point observed in the X683 binary. */
+/* Stock X683 F2FS entry point observed in the binary. */
 extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool force);
 
 /* Reconstructed Transsion GC mode selector. */
@@ -21,32 +21,32 @@ static int gc_type;
  *   gc_type == 0 : no override
  *   gc_type == 2 : force state 3 during GC
  *   otherwise    : force state 2 during GC
+ *
+ * The state word is mapped to f2fs_sb_info.gc_mode by the X683-era layout
+ * reconstruction, but remains offset-backed until the complete source tree
+ * is matched and compiled against the same structure packing.
  */
 int x683_tran_do_f2fs_gc(struct f2fs_sb_info *sbi)
 {
-        u32 old_state = x683_gc_state(sbi);
+        u32 old_state = x683_gc_mode(sbi);
         int ret;
 
         switch (gc_type) {
         case 0:
                 return f2fs_gc(sbi, x683_gc_sync(sbi), true);
         case 2:
-                x683_sbi_write_u32(sbi, X683_SBI_OFF_GC_STATE, 3);
+                x683_set_gc_mode(sbi, 3);
                 break;
         default:
-                x683_sbi_write_u32(sbi, X683_SBI_OFF_GC_STATE, 2);
+                x683_set_gc_mode(sbi, 2);
                 break;
         }
 
         ret = f2fs_gc(sbi, x683_gc_sync(sbi), true);
-        x683_sbi_write_u32(sbi, X683_SBI_OFF_GC_STATE, old_state);
+        x683_set_gc_mode(sbi, old_state);
         return ret;
 }
 
-/*
- * These symbols are intentionally kept separate from the final vendor
- * implementation until the exact MT6768/X683 F2FS source revision is matched.
- */
 int x683_tran_gc_get_type(void)
 {
         return gc_type;
