@@ -29,7 +29,7 @@ Do not replace a recovered X683 field/member with a newer upstream name merely b
 - `f2fs_gc()`: core control flow reconstructed; binary/vendor delta still being mapped
 - `do_garbage_collect()`: inlined structure reconstructed
 - `gc_data_segment()`: five-phase structure reconstructed
-- Phase-4 data migration: high-confidence control flow reconstructed; deepest write/replace engine still under instruction-level analysis
+- Phase-4 data migration: control flow reconstructed; `0x373e5c` deep write/replace engine mapped to five binary call targets, helper identities still being independently resolved
 - Transsion GC: behaviorally reconstructed; not verbatim vendor source
 - MT6768 hardware drivers: pending integration
 - X683/H694 DTS: pending reconstruction
@@ -37,4 +37,14 @@ Do not replace a recovered X683 field/member with a newer upstream name merely b
 
 ## New phase-4 reconstruction
 
-See `f2fs-gc-phase4-migration.md` for the binary-backed phase-4 migration map, helper identities, confidence levels, and remaining work around `0x373e5c`.
+- `f2fs-gc-phase4-migration.md`: binary-backed phase-4 migration map
+- `f2fs-move-data-block-373e5c.md`: deep `0x373e5c` helper/call-target map and confidence classifications
+
+The five next helper targets are:
+
+    0x00e0a490
+    0x00372ce8
+    0x00374700
+    0x00df8568
+    0x00e09ebc
+
