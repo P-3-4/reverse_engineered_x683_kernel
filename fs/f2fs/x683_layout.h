@@ -13,19 +13,30 @@
 
 struct f2fs_sb_info;
 
-#define X683_SBI_OFF_LOG_BLOCKS_PER_SEG   0x3d8
-#define X683_SBI_OFF_BLOCKS_PER_SEG       0x3dc
-#define X683_SBI_OFF_SEGS_PER_SEC         0x3e0
-#define X683_SBI_OFF_USER_BLOCK_COUNT     0x408
-#define X683_SBI_OFF_TOTAL_VALID_BLOCKS   0x410
-#define X683_SBI_OFF_DISCARD_BLKS         0x418
-#define X683_SBI_OFF_LAST_VALID_BLOCKS    0x420
-#define X683_SBI_OFF_RESERVED_BLOCKS      0x428
-#define X683_SBI_OFF_CURRENT_RESERVED     0x430
-#define X683_SBI_OFF_UNUSABLE_BLOCKS      0x438
-#define X683_SBI_OFF_NQUOTA_FILES         0x440
-#define X683_SBI_OFF_MOUNT_OPT            0x4b8
-#define X683_SBI_OFF_GC_MODE              0x534
+#define X683_SBI_OFF_SM_INFO             0x080
+#define X683_SBI_OFF_LOG_BLOCKS_PER_SEG  0x3d8
+#define X683_SBI_OFF_BLOCKS_PER_SEG      0x3dc
+#define X683_SBI_OFF_SEGS_PER_SEC        0x3e0
+#define X683_SBI_OFF_USER_BLOCK_COUNT    0x408
+#define X683_SBI_OFF_TOTAL_VALID_BLOCKS  0x410
+#define X683_SBI_OFF_DISCARD_BLKS        0x418
+#define X683_SBI_OFF_LAST_VALID_BLOCKS   0x420
+#define X683_SBI_OFF_RESERVED_BLOCKS     0x428
+#define X683_SBI_OFF_CURRENT_RESERVED    0x430
+#define X683_SBI_OFF_UNUSABLE_BLOCKS     0x438
+#define X683_SBI_OFF_NQUOTA_FILES        0x440
+#define X683_SBI_OFF_MOUNT_OPT           0x4b8
+#define X683_SBI_OFF_GC_MUTEX            0x508
+#define X683_SBI_OFF_GC_THREAD           0x528
+#define X683_SBI_OFF_CUR_VICTIM_SEC      0x530
+#define X683_SBI_OFF_GC_MODE             0x534
+#define X683_SBI_OFF_NEXT_VICTIM_SEG     0x538
+#define X683_SBI_OFF_SKIPPED_ATOMIC      0x540
+#define X683_SBI_OFF_SKIPPED_GC_RWSEM    0x550
+#define X683_SBI_OFF_GC_PIN_THRESHOLD    0x558
+#define X683_SBI_OFF_MAX_VICTIM_SEARCH   0x560
+#define X683_SBI_OFF_MIGRATION_GRAN      0x564
+#define X683_SBI_OFF_STAT_INFO           0x568
 
 static inline u32 x683_sbi_read_u32(const struct f2fs_sb_info *sbi,
                                      unsigned int off)
