@@ -26,7 +26,7 @@ Historical F2FS source commonly places additional statistics counters directly i
 
 ## 2. Historical SBI statistics-region fingerprint
 
-The matching older F2FS generation gives the following structural candidate sequence:
+The November 2018 Android/common 4.14 generation is a particularly strong structural reference. Its `f2fs_sb_info` declaration places the statistics fields immediately after `stat_info` in the following order. Normal ARM64/C alignment gives this candidate X683-era sequence:
 
 ```text
 0x568  stat_info pointer
@@ -34,6 +34,7 @@ The matching older F2FS generation gives the following structural candidate sequ
 0x580  segment_count[2]
 0x588  block_count[2]
 0x590  inplace_count
+0x594  padding for 64-bit alignment
 0x598  total_hit_ext
 0x5a0  read_hit_rbtree
 0x5a8  read_hit_largest
@@ -50,7 +51,15 @@ The matching older F2FS generation gives the following structural candidate sequ
 0x5dc  other_skip_bggc
 ```
 
-These names remain **structural candidates** until individual X683 call sites prove the access semantics. In particular, `0x5d4..0x5dc` are not promoted merely because the historical ordering matches.
+This sequence matches the candidate offsets already recovered from the X683 binary analysis. The structural match is now strong enough to sharply narrow the historical source family, but these names remain **structural candidates** until individual X683 call sites prove the access semantics. In particular, `0x5d4..0x5dc` are not promoted merely because the historical ordering matches.
+
+The same historical generation also contains the four-argument ABI:
+
+```c
+f2fs_gc(sbi, sync, background, segno);
+```
+
+and the GC-manager/statistics combination seen in X683.
 
 ## 3. Direct X683 dirty-info evidence
 
@@ -119,6 +128,28 @@ No direct X683 instruction has yet been found that uniquely proves all three nam
 The actual object pointed to by `sbi + 0x568` must be reconstructed separately.
 
 Do **not** infer its members from the `sbi + 0x570..` addresses.
+
+Historical 4.14 F2FS provides a reference object beginning approximately with:
+
+```text
++0x00  stat_list
++0x10  sbi
++0x18  all_area_segs
++0x1c  sit_area_segs
++0x20  nat_area_segs
++0x24  ssa_area_segs
++0x28  main_area_segs
++0x2c  main_area_sections
++0x30  main_area_zones
++0x38  hit_largest
++0x40  hit_cached
++0x48  hit_rbtree
++0x50  hit_total
++0x58  total_ext
++...
+```
+
+These are **historical reference offsets only**, not X683 offsets. The actual X683 object remains unresolved.
 
 The next binary pass must follow the loaded `stat_info` pointer and recover accesses relative to that pointer, e.g.:
 
