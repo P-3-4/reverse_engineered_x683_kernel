@@ -2,45 +2,60 @@
 
 ## Stock call ABI
 
-The current X683/H694 reverse-engineering record identifies a three-argument call to `f2fs_gc` from the Transsion GC wrapper:
+Direct disassembly of the X683/H694 stock `Image` now proves the Transsion GC wrapper calls `f2fs_gc` with four arguments:
 
 ```c
-f2fs_gc(sbi, sync, true);
+f2fs_gc(sbi, sync, true, NULL_SEGNO);
 ```
 
-The AArch64 call record is treated as:
+The AArch64 call record is:
 
 ```text
 x0 = sbi
-x1 = sync
+x1 = (sbi->mount_opt.opt >> 14) & 1
 x2 = true
+x3 = NULL_SEGNO (-1)
 ```
 
-The important point is that the third argument is **not** being assumed to have the same semantic name as a newer public F2FS parameter. The reconstruction currently treats it as the stock wrapper's force/override argument because the surrounding wrapper behavior temporarily changes the GC state word at `sbi + 0x534`.
+The wrapper at X683 `Image` offset `0x37ada8` loads `sbi->gc_mode` from `0x534`, extracts bit 14 from `mount_opt.opt` at `0x4b8`, temporarily writes GC mode 2 or 3, calls the stock `f2fs_gc` at `0x3503a8`, and restores the previous GC mode.
+
+The third argument is therefore the historical `background` parameter, while the fourth argument is a victim-segment selector. This matches the later 4.14-era API shape rather than the older three-argument form.
+
+## Direct stock evidence inside `f2fs_gc()`
+
+The X683 `f2fs_gc()` implementation begins at `Image` offset `0x3503a8`.
+
+Its entry path independently accesses the same reconstructed fields:
+
+```text
+sbi + 0x528   GC thread/state pointer
+sbi + 0x428   reserved_blocks
+sbi + 0x434   high/word access into current_reserved_blocks
+sbi + 0x440   nquota_files candidate
+sbi + 0x80    sm_info
+sbi + 0x3d8   log_blocks_per_seg
+sbi + 0x3dc   blocks_per_seg
+sbi + 0x3e0   segs_per_sec
+sbi + 0x4b8   mount_opt.opt
+sbi + 0x548   GC-related pointer/state
+sbi + 0x550   GC-related field
+sbi + 0x534   gc_mode (used by the caller and GC core)
+```
+
+The GC core also uses the `sm_info` chain and segment-manager fields when deciding whether to proceed and when selecting/processing garbage-collection work.
 
 ## Historical public correlation
 
-Android Common 4.14 history is a much better structural baseline than current MT6768 trees. In the 2018 Android 4.14 lineage, `struct f2fs_sb_info` contains the same important sequence recovered from X683: `user_block_count`, `total_valid_block_count`, `discard_blks`, `last_valid_block_count`, `reserved_blocks`, `current_reserved_blocks`, `unusable_block_count`, and `nquota_files`. The same lineage also places `gc_mode` in the GC state area. citeturn9search0turn7search1
+Older F2FS history contains a three-argument `f2fs_gc(sbi, sync, background)` form. Later development added a victim-segment argument and subsequently additional control parameters. The X683 binary therefore belongs to the later side of that ABI transition, not the original three-argument revision.
 
-The Android Common 4.14 tree merged in March 2019 still exposes the historical four-argument form:
-
-```c
-f2fs_gc(sbi, sync, background, segno);
-```
-
-and explicitly uses `sbi->gc_mode` in the GC thread. This confirms that the X683 tree is not simply a stock copy of that public revision if the recovered three-argument call is correct. citeturn12search0
-
-A separate 2015 F2FS change established bit `0x00004000` as `F2FS_MOUNT_FORCE_FG_GC` and used that option to make background GC run with foreground semantics. This is the historical origin of the exact bit-14 behavior recovered in X683. citeturn6search0
+The appropriate public reference window remains the vendor-era 4.14 lineage, but source selection must be based on the X683 structure layout and call behavior rather than on a branch name alone.
 
 ## Current conclusion
 
-- `sbi + 0x4b8`: high-confidence `mount_opt.opt`.
-- bit 14 of `0x4b8`: high-confidence correlation with `F2FS_MOUNT_FORCE_FG_GC` / foreground-GC behavior.
-- `sbi + 0x534`: high-confidence GC-mode/state word; public 4.14 history independently confirms `gc_mode` exists in this GC-state region. citeturn7search1
-- X683 `f2fs_gc` call: **three arguments are the current stock reconstruction**; third-argument semantic is vendor-specific and remains subject to final call-site verification.
+- `sbi + 0x4b8`: **confirmed** `mount_opt.opt`; bit 14 is passed as `sync`.
+- `sbi + 0x534`: **confirmed** `gc_mode`.
+- X683 `f2fs_gc` call: **confirmed four-argument form** `f2fs_gc(sbi, sync, background, segno)`.
+- X683 call passes `background = true` and `segno = NULL_SEGNO`.
+- Stock `f2fs_gc()` entry is **confirmed at Image offset `0x3503a8`**.
 
-## Baseline selection
-
-The best public source window to investigate next is the **2018–2019 Android Common 4.14 F2FS lineage**, before later 2020 cleanups and feature additions. The public 2019 API is still not the X683 API; it is a structural/reference baseline only.
-
-Do not replace the X683 ABI with a newer public F2FS prototype merely to make a source tree compile. The matching historical `gc.c`, `segment.c`, `segment.h`, and `f2fs.h` must be selected from structure layout, call behavior, and additional X683 binary evidence together.
+Do not replace the X683 ABI with a newer `gc_control` API merely to make a source tree compile. The matching historical `gc.c`, `segment.c`, `segment.h`, and `f2fs.h` must be selected from the actual binary structure and behavior.
