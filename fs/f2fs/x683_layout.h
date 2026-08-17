@@ -41,33 +41,34 @@ struct f2fs_sb_info;
 /*
  * Structural candidates from the historical CONFIG_F2FS_STAT_FS layout.
  *
- * These offsets line up exactly when META_MAX == 4:
- *   stat_info pointer        0x568
- *   meta_count[4]            0x570..0x57c
+ * These offsets line up exactly when META_MAX == 4 and normal 64-bit
+ * alignment is respected. After stat_info, the sequence is:
+ *   meta_count[4]            0x570..0x57f
  *   segment_count[2]         0x580..0x587
  *   block_count[2]           0x588..0x58f
- *   inplace_count            0x590
- *   total_hit_ext            0x594
- *   read_hit_rbtree          0x59c
- *   read_hit_largest         0x5a4
- *   read_hit_cached          0x5ac
- *   inline_xattr             0x5b4
- *   inline_inode             0x5b8
- *   inline_dir               0x5bc
- *   aw_cnt                   0x5c0
- *   vw_cnt                   0x5c4
- *   max_aw_cnt               0x5c8
- *   max_vw_cnt               0x5cc
- *   bg_gc                    0x5d0
- *   io_skip_bggc             0x5d4
- *   other_skip_bggc          0x5d8
+ *   inplace_count            0x590..0x593
+ *   padding                  0x594..0x597
+ *   total_hit_ext            0x598..0x59f
+ *   read_hit_rbtree          0x5a0..0x5a7
+ *   read_hit_largest         0x5a8..0x5af
+ *   read_hit_cached          0x5b0..0x5b7
+ *   inline_xattr             0x5b8
+ *   inline_inode             0x5bc
+ *   inline_dir               0x5c0
+ *   aw_cnt                   0x5c4
+ *   vw_cnt                   0x5c8
+ *   max_aw_cnt               0x5cc
+ *   max_vw_cnt               0x5d0
+ *   bg_gc                    0x5d4
+ *   io_skip_bggc             0x5d8
+ *   other_skip_bggc          0x5dc
  *
- * NOTE: the 0x5d4/0x5d8/0x5dc X683 offsets remain pending direct stock
- * call-site validation. Do not treat these names as binary-confirmed yet.
+ * NOTE: the X683 offsets 0x5d4/0x5d8/0x5dc still require direct stock
+ * call-site validation before their names are promoted to binary-confirmed.
  */
-#define X683_SBI_CAND_STAT_MAX_VW_CNT   0x5d4
-#define X683_SBI_CAND_STAT_BG_GC        0x5d8
-#define X683_SBI_CAND_STAT_IO_SKIP_BGGC 0x5dc
+#define X683_SBI_CAND_STAT_BG_GC        0x5d4
+#define X683_SBI_CAND_STAT_IO_SKIP_BGGC 0x5d8
+#define X683_SBI_CAND_STAT_OTHER_SKIP   0x5dc
 
 static inline u32 x683_sbi_read_u32(const struct f2fs_sb_info *sbi,
                                      unsigned int off)
