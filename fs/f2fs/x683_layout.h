@@ -17,12 +17,15 @@ struct f2fs_sb_info;
 #define X683_SBI_OFF_BLOCKS_PER_SEG       0x3dc
 #define X683_SBI_OFF_SEGS_PER_SEC         0x3e0
 #define X683_SBI_OFF_USER_BLOCK_COUNT     0x408
+#define X683_SBI_OFF_TOTAL_VALID_BLOCKS   0x410
+#define X683_SBI_OFF_DISCARD_BLKS         0x418
+#define X683_SBI_OFF_LAST_VALID_BLOCKS    0x420
 #define X683_SBI_OFF_RESERVED_BLOCKS      0x428
 #define X683_SBI_OFF_CURRENT_RESERVED     0x430
 #define X683_SBI_OFF_UNUSABLE_BLOCKS      0x438
 #define X683_SBI_OFF_NQUOTA_FILES         0x440
 #define X683_SBI_OFF_MOUNT_OPT            0x4b8
-#define X683_SBI_OFF_GC_STATE             0x534
+#define X683_SBI_OFF_GC_MODE              0x534
 
 static inline u32 x683_sbi_read_u32(const struct f2fs_sb_info *sbi,
                                      unsigned int off)
@@ -61,14 +64,20 @@ static inline u32 x683_mount_opt(const struct f2fs_sb_info *sbi)
         return x683_sbi_read_u32(sbi, X683_SBI_OFF_MOUNT_OPT);
 }
 
-static inline u32 x683_gc_state(const struct f2fs_sb_info *sbi)
-{
-        return x683_sbi_read_u32(sbi, X683_SBI_OFF_GC_STATE);
-}
-
+/* Bit 14 of mount_opt.opt correlates with the stock FORCE_FG_GC option. */
 static inline u32 x683_gc_sync(const struct f2fs_sb_info *sbi)
 {
         return (x683_mount_opt(sbi) >> 14) & 1U;
+}
+
+static inline u32 x683_gc_mode(const struct f2fs_sb_info *sbi)
+{
+        return x683_sbi_read_u32(sbi, X683_SBI_OFF_GC_MODE);
+}
+
+static inline void x683_set_gc_mode(struct f2fs_sb_info *sbi, u32 mode)
+{
+        x683_sbi_write_u32(sbi, X683_SBI_OFF_GC_MODE, mode);
 }
 
 #endif
