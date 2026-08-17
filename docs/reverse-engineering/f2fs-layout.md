@@ -21,6 +21,7 @@ This document records field mappings supported by the stock X683 binary and hist
 | `0x438` | `unusable_block_count` | high structural match |
 | `0x440` | `nquota_files` | **confirmed structural/member sequence; direct GC use** |
 | `0x4b8` | `mount_opt.opt` | **confirmed**; bit 14 is passed as `sync` to `f2fs_gc()` |
+| `0x508` | `gc_mutex` | **confirmed directly from stock `tran_gc_thread_func`** |
 | `0x528` | `gc_thread` pointer | **confirmed** by X683 GC-thread allocation/initialization |
 | `0x530` | `cur_victim_sec` | **confirmed structurally**; initialized to `NULL_SEGNO` and reset to `NULL_SEGNO` during GC |
 | `0x534` | `gc_mode` | **confirmed** by Transsion wrapper read/write and GC-core usage |
@@ -33,9 +34,39 @@ This document records field mappings supported by the stock X683 binary and hist
 | `0x564` | `migration_granularity` | **very strong structural match**; initialized from an X683 configuration value and directly read by GC |
 | `0x568` | `stat_info` pointer | **strong**; GC loads a 64-bit pointer here and updates statistics members through it |
 
+### Newly confirmed `gc_mutex @ 0x508`
+
+The previous unresolved `gc_mutex` position is now closed by direct stock-binary evidence.
+
+At `tran_gc_thread_func` the binary computes:
+
+```asm
+add x8, x19, #0x508
+str x8, [sp, #0x38]
+...
+ldr x0, [sp, #0x38]
+bl  mutex_trylock
+```
+
+Here `x19` is the `struct f2fs_sb_info *`. The value passed to `mutex_trylock()` is therefore exactly `sbi + 0x508`.
+
+The same mutex address is then used for the corresponding unlock path. This is no longer an inference from structure size: the address is materialized from `sbi` by the stock Transsion GC thread itself.
+
+The resulting sequence is:
+
+```text
+0x4b8  mount_opt.opt
+0x508  gc_mutex
+0x528  gc_thread
+0x530  cur_victim_sec
+0x534  gc_mode
+```
+
+This also explains the 0x20-byte gap from the mutex start to `gc_thread`; the exact kernel `struct mutex` size/alignment should still be verified against the X683 build configuration, but the field start itself is binary-confirmed.
+
 ### `0x528` GC-thread reconstruction
 
-The stock X683 GC initialization path allocates a GC-thread object, stores it at `sbi + 0x528`, then initializes its wait queue and launches the task. The object layout matches the historical 4.14 `f2fs_gc_kthread` form:
+The stock X683 GC initialization path allocates a GC-thread object, stores it at `sbi + 0x528`, then initializes its wait queue and launches the task. The object layout matches the historical 4.14 F2FS form:
 
 | GC-thread relative offset | Candidate |
 |---:|---|
@@ -49,7 +80,7 @@ The stock X683 GC initialization path allocates a GC-thread object, stores it at
 | `+0x34` | `gc_urgent` |
 | `+0x38` | `gc_wake` |
 
-The X683 initialization sequence explicitly writes the sleep timers at `+0x20/+0x28`, clears `gc_idle` at `+0x30`, stores the object into `sbi + 0x528`, initializes the wait queue beginning at `+0x08`, then writes the created task pointer at `+0x00`. Historical 4.14 F2FS places the same task/wait-queue/timer/state fields in this GC-thread object. citeturn801496search6turn801496search5
+This exact object pattern is also present in older public F2FS implementations, where the GC thread stores the task pointer, wait queue, four sleep timers, and the `gc_idle`/`gc_urgent`/`gc_wake` state words. citeturn9search11turn9search12
 
 ### Reservation-field detail
 
@@ -72,9 +103,38 @@ The X683 binary now strongly matches the historical sequence:
 0x568  stat_info
 ```
 
-This exact ordering is present in historical F2FS structures, including the `skipped_atomic_files[2]`, `skipped_gc_rwsem`, `gc_pin_file_threshold`, `max_victim_search`, and `migration_granularity` fields. citeturn801496search6turn801496search8
+This ordering is independently present in historical F2FS source. citeturn3search0turn3search4
 
-The X683 binary independently supports the mapping: `0x530` is initialized/reset to `NULL_SEGNO`, `0x538` is initialized as an 8-byte `NULL_SEGNO` pair, `0x560` is initialized to `0x1000`, `0x564` is initialized from a configuration-derived value, and GC directly reads/increments the fields at `0x548`, `0x550`, `0x558`, and `0x564`.
+## Historical source fingerprint
+
+The X683 binary is now a particularly close match to the older F2FS generation containing:
+
+```c
+int f2fs_gc(struct f2fs_sb_info *sbi,
+            bool sync,
+            bool background,
+            unsigned int segno);
+```
+
+and the manager sequence:
+
+```c
+struct mutex gc_mutex;
+struct f2fs_gc_kthread *gc_thread;
+unsigned int cur_victim_sec;
+unsigned int gc_mode;
+unsigned int next_victim_seg[2];
+unsigned long long skipped_atomic_files[2];
+unsigned long long skipped_gc_rwsem;
+u64 gc_pin_file_threshold;
+unsigned int max_victim_search;
+unsigned int migration_granularity;
+struct f2fs_stat_info *stat_info;
+```
+
+The four-argument ABI is explicitly present in historical Android/common F2FS source. citeturn5search0turn10search0
+
+The X683 kernel's Linux version string is `4.14.141+`, and Android/common merged upstream Linux 4.14.141 into its Android 4.14 branch in August 2019. That makes the Android/common 4.14.141-era tree a strong historical baseline candidate, but **not yet the proven original X683 source**. The binary still has final authority. citeturn6search0
 
 ## `struct f2fs_sm_info`
 
@@ -96,11 +156,11 @@ The X683 binary independently supports the mapping: `0x530` is initialized/reset
 
 ## `dirty_info` evidence
 
-The stock Transsion GC thread dereferences `sbi + 0x80`, then `sm_info + 0x10`, and reads the sequence at `dirty_info + 0x68` through `+0x7c` as six consecutive 32-bit values. These values are accumulated by the fragmentation/free-space logic and strongly correlate with the historical F2FS `nr_dirty[]` entries. Historical F2FS GC code independently uses `dirty_i->nr_dirty[]` as six per-type dirty-segment counts. citeturn801496search1 Final X683 member naming remains provisional until another stock path confirms the same array relationship.
+The stock Transsion GC thread dereferences `sbi + 0x80`, then `sm_info + 0x10`, and reads the sequence at `dirty_info + 0x68` through `+0x7c` as six consecutive 32-bit values. These values are accumulated by the fragmentation/free-space logic and strongly correlate with the historical F2FS `nr_dirty[]` entries. Final X683 member naming remains provisional until another stock path confirms the same array relationship.
 
 ## Unresolved vendor-specific counters
 
-The X683 binary accesses additional fields at `sbi + 0x5d4`, `0x5d8`, and `0x5dc`. Their exact identities are not being guessed. `0x5d4` is incremented immediately before one GC invocation path; `0x5dc` is similarly incremented in a GC-management path; `0x5d8` is read/written by other functions. These are retained as vendor/GC counters until their common semantics are established.
+The X683 binary accesses additional fields at `sbi + 0x5d4`, `0x5d8`, and `0x5dc`. Their exact identities are not being guessed. These remain vendor/GC counters until their common semantics are established.
 
 ## Confirmed GC ABI
 
@@ -117,9 +177,9 @@ The stock `f2fs_gc()` entry is at Image offset `0x3503a8`.
 
 ## Remaining work
 
-1. Resolve the X683 `gc_mutex` location and exact GC-manager synchronization path.
-2. Confirm `skipped_atomic_files[2]` by finding the stock counter reads/writes at both `0x540` and `0x548`.
-3. Map the `stat_info` structure reached through `sbi + 0x568`.
-4. Reconstruct the vendor-specific counters at `0x5d4/0x5d8/0x5dc`.
-5. Recover the remaining X683 `f2fs_gc()` victim-selection/accounting control flow.
+1. Map the `stat_info` structure reached through `sbi + 0x568`.
+2. Reconstruct the vendor-specific counters at `0x5d4/0x5d8/0x5dc`.
+3. Confirm `skipped_atomic_files[2]` by finding the stock counter reads/writes at both `0x540` and `0x548`.
+4. Recover the remaining X683 `f2fs_gc()` victim-selection/accounting control flow.
+5. Identify the closest historical 4.14 F2FS revision by comparing complete `f2fs.h`, `gc.c`, `gc.h`, and `segment.c` behavior—not by kernel version alone.
 6. Replace offset helpers with normal structure members only after the complete structure is proven against the selected source revision.
