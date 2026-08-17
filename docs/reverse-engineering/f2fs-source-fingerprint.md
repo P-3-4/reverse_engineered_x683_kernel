@@ -24,7 +24,7 @@ int f2fs_gc(struct f2fs_sb_info *sbi,
             unsigned int segno);
 ```
 
-Historical F2FS source contains this exact four-argument prototype. citeturn219284search2
+Historical F2FS source contains this exact four-argument prototype.
 
 ## 2. GC-manager structure fingerprint
 
@@ -44,44 +44,42 @@ sbi + 0x564  migration_granularity
 sbi + 0x568  stat_info
 ```
 
-`gc_mutex @ 0x508` is directly proven by the stock Transsion GC thread materializing `sbi + 0x508` and passing it to `mutex_trylock()` / the corresponding unlock path. The other fields are independently supported by stock initialization/access patterns and historical source ordering.
+`gc_mutex @ 0x508` is now directly binary-confirmed: the stock Transsion GC thread materializes `sbi + 0x508` and passes it through the mutex trylock/unlock path. This supersedes the earlier unresolved status of `gc_mutex`.
 
-Historical Android/common 4.14 F2FS is especially relevant: the ASB-2018-11-05_4.14 history shows the same `gc_mutex`, `gc_thread`, `cur_victim_sec`, `gc_mode`, `next_victim_seg[2]`, `skipped_atomic_files[2]`, `skipped_gc_rwsem`, `gc_pin_file_threshold`, `max_victim_search`, and `migration_granularity` sequence. citeturn817993search1turn982538search0
+The remaining GC fields are independently supported by stock initialization/access patterns and historical source ordering.
+
+Historical Android/common 4.14 F2FS is especially relevant: the ASB-2018-11-05_4.14 history shows the same GC-manager field family and ordering. This does **not** prove X683 was built from Android/common; it identifies a strong structural ancestor.
 
 ## 3. Post-`stat_info` fingerprint
 
 The X683 stock configuration has `CONFIG_F2FS_STAT_FS=y`.
 
-In the matching older F2FS generation, the `f2fs_sb_info` statistics block continues after `stat_info` as:
+The matching older F2FS generation gives the following structural candidate layout after `stat_info`:
 
 ```text
 0x568  stat_info pointer
-0x570  atomic_t meta_count[4]
-0x580  unsigned int segment_count[2]
-0x588  unsigned int block_count[2]
-0x590  atomic_t inplace_count
-0x594  alignment padding on AArch64
-0x598  atomic64_t total_hit_ext
-0x5a0  atomic64_t read_hit_rbtree
-0x5a8  atomic64_t read_hit_largest
-0x5b0  atomic64_t read_hit_cached
-0x5b8  atomic_t inline_xattr
-0x5bc  atomic_t inline_inode
-0x5c0  atomic_t inline_dir
-0x5c4  atomic_t aw_cnt
-0x5c8  atomic_t vw_cnt
-0x5cc  atomic_t max_aw_cnt
-0x5d0  atomic_t max_vw_cnt
-0x5d4  int bg_gc
-0x5d8  unsigned int io_skip_bggc
-0x5dc  unsigned int other_skip_bggc
+0x570  meta_count[4]
+0x580  segment_count[2]
+0x588  block_count[2]
+0x590  inplace_count
+0x594  AArch64 alignment padding
+0x598  total_hit_ext
+0x5a0  read_hit_rbtree
+0x5a8  read_hit_largest
+0x5b0  read_hit_cached
+0x5b8  inline_xattr
+0x5bc  inline_inode
+0x5c0  inline_dir
+0x5c4  aw_cnt
+0x5c8  vw_cnt
+0x5cc  max_aw_cnt
+0x5d0  max_vw_cnt
+0x5d4  bg_gc
+0x5d8  io_skip_bggc
+0x5dc  other_skip_bggc
 ```
 
-The historical Android/common 4.14 maintenance history provides a particularly strong match: the ASB-2018-11-05_4.14 diff adds `meta_count[META_MAX]`, `io_skip_bggc`, and `other_skip_bggc` to `f2fs_sb_info`, and adds the matching statistics/update paths in `debug.c`/`f2fs.h`. citeturn982538search0
-
-Other historical F2FS references independently show the exact `aw_cnt`, `vw_cnt`, `max_aw_cnt`, `max_vw_cnt`, `bg_gc`, `io_skip_bggc`, and `other_skip_bggc` ordering. citeturn817993search2turn817993search3
-
-This is a strong source fingerprint because later F2FS revisions inserted compression/statistics fields in this area, which would move these offsets. citeturn219284search9turn217996search1
+The historical Android/common 4.14 maintenance history provides a strong match for the statistics additions, including `meta_count[META_MAX]`, `io_skip_bggc`, and `other_skip_bggc`.
 
 ## 4. Current confidence of `0x5d4–0x5dc`
 
@@ -91,13 +89,27 @@ This is a strong source fingerprint because later F2FS revisions inserted compre
 0x5dc  other_skip_bggc   strong structural candidate
 ```
 
-These names are **not yet binary-confirmed**. The remaining proof step is to locate stock X683 call sites that distinguish the increment/read semantics of the three counters.
+These names remain **structural candidates**, not final binary-confirmed fields. The remaining proof step is to locate stock X683 call sites that distinguish their increment/read semantics.
 
 ## 5. Historical baseline narrowed
 
-The source search is now narrowed from generic `Linux 4.14` to the **older Android/common 4.14 F2FS generation**, with the ASB-2018-11-05_4.14 history as a particularly strong candidate baseline. That history also shows the same reservation-field additions (`unusable_block_count`, `nquota_files`) and GC/background-GC statistics that appear in the X683 binary. citeturn982538search0
+The source search is now narrowed from generic `Linux 4.14` to the **older Android/common 4.14 F2FS generation**, with the ASB-2018-11-05_4.14 history as a particularly strong candidate baseline.
 
-This does **not** prove that X683 was built from Android/common. Transsion/MediaTek changes and later backports are still expected. The proper conclusion is:
+The reason is the combination of fingerprints rather than kernel version alone:
+
+```text
+four-argument f2fs_gc()
+gc_mutex / gc_thread family
+skipped_gc_rwsem
+gc_pin_file_threshold
+max_victim_search
+migration_granularity
+stat_info statistics block
+bg_gc / io_skip_bggc / other_skip_bggc
+reservation-field additions
+```
+
+This does **not** prove that X683 was built from Android/common. Transsion/MediaTek changes and later backports are still expected. The proper working model is:
 
 ```text
 Android/common 4.14 historical F2FS
@@ -124,7 +136,7 @@ against the stock implementation.
 
 ## 6. X683 binary authority
 
-The stock X683 kernel was built from a `kernel-4.14` tree and exposes F2FS source-path strings for `f2fs.h`, `segment.h`, `segment.c`, and `super.c`.
+The stock X683 kernel exposes F2FS source-path strings for `f2fs.h`, `segment.h`, `segment.c`, and `super.c`.
 
 Known stock configuration includes:
 
