@@ -26,7 +26,15 @@ Do not replace a recovered X683 field/member with a newer upstream name merely b
 ## Reconstruction status
 
 - F2FS structure mapping: in progress
+- `f2fs_gc()`: core control flow reconstructed; binary/vendor delta still being mapped
+- `do_garbage_collect()`: inlined structure reconstructed
+- `gc_data_segment()`: five-phase structure reconstructed
+- Phase-4 data migration: high-confidence control flow reconstructed; deepest write/replace engine still under instruction-level analysis
 - Transsion GC: behaviorally reconstructed; not verbatim vendor source
 - MT6768 hardware drivers: pending integration
 - X683/H694 DTS: pending reconstruction
 - Exact stock-equivalent build: not yet achieved
+
+## New phase-4 reconstruction
+
+See `f2fs-gc-phase4-migration.md` for the binary-backed phase-4 migration map, helper identities, confidence levels, and remaining work around `0x373e5c`.
