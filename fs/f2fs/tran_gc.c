@@ -11,30 +11,42 @@
 #include "x683_layout.h"
 
 /*
- * Historical F2FS ABI recovered for the X683 call site:
+ * Exact X683 call ABI recovered from tran_do_f2fs_gc():
  *
- *     f2fs_gc(sbi, sync, background)
+ *     f2fs_gc(sbi, sync, background, segno)
  *
- * The third argument is therefore the background-context selector, not a
- * later vendor 'force' parameter. This matches the older F2FS revision in
- * which background GC was explicitly distinguished from foreground GC.
+ * The stock wrapper passes:
+ *     sync       = F2FS_MOUNT_FORCE_FG_GC (mount_opt bit 14)
+ *     background = true
+ *     segno      = NULL_SEGNO (-1)
+ *
+ * The fourth argument is therefore part of the X683/vendor F2FS ABI.
  */
-extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background);
+extern int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
+                   bool background, unsigned int segno);
 
 /* Reconstructed Transsion GC mode selector. */
 static int gc_type;
 
 /*
- * The X683 binary temporarily changes the stock F2FS GC state word:
- *   gc_type == 0 : no override
- *   gc_type == 2 : force GC mode 3 during GC
- *   otherwise    : force GC mode 2 during GC
+ * Stock tran_do_f2fs_gc() behavior recovered from AArch64:
  *
- * The recovered values correlate with the historical F2FS GC mode enum:
- *   2 = GC_IDLE_GREEDY
- *   3 = GC_URGENT
+ *   save sbi->gc_mode
  *
- * The state word is mapped to f2fs_sb_info.gc_mode at X683 offset 0x534.
+ *   if (gc_type == 0)
+ *       f2fs_gc(sbi, mount_opt bit 14, true, NULL_SEGNO)
+ *
+ *   else if (gc_type == 2)
+ *       sbi->gc_mode = 3;
+ *       f2fs_gc(sbi, mount_opt bit 14, true, NULL_SEGNO)
+ *       restore gc_mode
+ *
+ *   else
+ *       sbi->gc_mode = 2;
+ *       f2fs_gc(sbi, mount_opt bit 14, true, NULL_SEGNO)
+ *       restore gc_mode
+ *
+ * The stock binary passes the saved gc_mode back after the GC call.
  */
 int x683_tran_do_f2fs_gc(struct f2fs_sb_info *sbi)
 {
@@ -43,7 +55,7 @@ int x683_tran_do_f2fs_gc(struct f2fs_sb_info *sbi)
 
         switch (gc_type) {
         case 0:
-                return f2fs_gc(sbi, x683_gc_sync(sbi), true);
+                return f2fs_gc(sbi, x683_gc_sync(sbi), true, NULL_SEGNO);
         case 2:
                 x683_set_gc_mode(sbi, 3);
                 break;
@@ -52,7 +64,7 @@ int x683_tran_do_f2fs_gc(struct f2fs_sb_info *sbi)
                 break;
         }
 
-        ret = f2fs_gc(sbi, x683_gc_sync(sbi), true);
+        ret = f2fs_gc(sbi, x683_gc_sync(sbi), true, NULL_SEGNO);
         x683_set_gc_mode(sbi, old_state);
         return ret;
 }
