@@ -51,7 +51,7 @@ Transsion uses `NULL_SEGNO`.
 
 ```text
 +0x990  cycle/invocation counter
-+0x998  controller: 0 normal / 1 GREEDY / 2 URGENT
++0x998  controller: 0 normal / 1 URGENT / 2 GREEDY
 +0x9c0  controller-write guard
 +0x9d0  loop/termination state
 +0x9d4  detector state
@@ -200,15 +200,12 @@ if (task->flags & PF_KTHREAD)
 return true;
 ```
 
-The matching Android 4.14 freezer implementation uses `pm_nosig_freezing || cgroup_freezing(p)` and `pm_freezing && !(p->flags & PF_KTHREAD)` in `freezing_slow_path()`. The X683 binary additionally rejects `PF_KSWAPD` instead of using the standard `TIF_MEMDIE` test.
+### Freezer-object correction
 
-### `+0x20` correction
-
-The previous label `controller-object +0x20` was incorrect.
-
-`x22` in the detector points to `Image+0x19f0000`, so:
+The detector's `x22 + 0x20` was previously treated as a vendor controller field. That was wrong.
 
 ```text
+x22 -> Image+0x19f0000
 [x22 + 0x20] = system_freezing_cnt
 [x22 + 0x24] = pm_freezing
 [x22 + 0x28] = pm_nosig_freezing
@@ -232,63 +229,111 @@ When auxiliary state `+0x898` exists, the callback also signals the object at `+
 
 Public/vendor event identity remains unresolved.
 
-## Superblock freeze-protection helpers
+## Superblock/per-CPU synchronization helpers
 
 ### `0x1eca60`
 
-Resolved as the X683 compiler-emitted form of:
+Correction: this address is **not** `__sb_start_write()`.
 
-```c
-int __sb_start_write(struct super_block *sb, int level, bool wait);
-```
-
-The detector caller at `0x3773f4` supplies:
-
-```text
-sb = *(sbi + 0x0)
-level = 1
-wait = 0
-```
-
-So this is:
-
-```c
-__sb_start_write(sb, SB_FREEZE_WRITE, false);
-```
-
-That is a **nonblocking freeze-protection acquisition**. A zero return diverts to the alternate/recheck path; a nonzero return allows the subsequent GC-policy/lock sequence.
+The current binary mapping places `0x1eca60` in the per-CPU reader synchronization family (`percpu_rwsem` / `percpu_down_read` lineage). It is called from the detector with `(level=1, wait=0)`-shaped arguments, but the exact vendor/build-specific wrapper identity should not be renamed beyond that without preserving the machine-code caveat.
 
 ### `0x1ec9e4`
 
-Resolved as the matching:
+This is the corresponding per-CPU reader-release path used after the detector's synchronized section.
+
+### `0x341250`
+
+This separate X683 helper contains the filesystem write/GC-balancing path and must not be conflated with `0x1eca60`. Its exact upstream symbolic name remains under comparison against the matching 4.14 source.
+
+## Exact `tran_f2fs_gc()` wrapper
+
+Primary source: stock `0x37ada8..0x37ae94`.
+
+This is the actual Transsion controller wrapper:
 
 ```c
-__sb_end_write(sb, 1);
+controller = *(u32 *)(Image + 0x1a13998);
+force_fg_gc = (sbi->mount_opt.opt >> 14) & 1;
+
+switch (controller) {
+case 0:
+    return f2fs_gc(sbi, force_fg_gc, true, NULL_SEGNO);
+case 1:
+    old = sbi->gc_mode;
+    sbi->gc_mode = 2;
+    ret = f2fs_gc(sbi, force_fg_gc, true, NULL_SEGNO);
+    sbi->gc_mode = old;
+    return ret;
+case 2:
+    old = sbi->gc_mode;
+    sbi->gc_mode = 3;
+    ret = f2fs_gc(sbi, force_fg_gc, true, NULL_SEGNO);
+    sbi->gc_mode = old;
+    return ret;
+default:
+    /* stock path does not use another controller value */
+}
 ```
 
-It is called at `0x377438` after the vendor F2FS policy operation.
-
-The underlying primitive is the `percpu_rwsem` reader path used by Android/common 4.14 `fs/super.c`: blocking mode uses `percpu_down_read()`, nonblocking mode uses `percpu_down_read_trylock()`, and release uses `percpu_up_read()`.
-
-## Transsion GC wrapper
-
-`fs/f2fs/tran_gc_wrapper_reconstructed.c`.
-
-Recovered behavior:
+Exact wrapper facts:
 
 ```text
-controller 0 -> normal f2fs_gc(..., NULL_SEGNO)
-controller 1 -> save gc_mode; set 2; f2fs_gc(..., NULL_SEGNO); restore
-controller 2 -> save gc_mode; set 3; f2fs_gc(..., NULL_SEGNO); restore
++0x1a13990 = invocation counter; incremented on entry
++0x1a13998 = controller
+sbi + 0x4b8 = mount_opt.opt
+sync       = mount_opt bit 14 = F2FS_MOUNT_FORCE_FG_GC
+background = true
+segno      = NULL_SEGNO
 ```
 
-Do not conflate controller values with underlying `gc_mode` values.
+Nearby stock strings identify vendor GC modes:
+
+```text
+"gc mode is COST"
+"gc mode is URGENT"
+"gc mode is GREEDY"
+```
+
+The vendor `gc_mode` values are therefore:
+
+```text
+1 = COST
+2 = URGENT
+3 = GREEDY
+```
+
+Controller mapping:
+
+```text
+controller 0 -> preserve current gc_mode
+controller 1 -> temporary gc_mode 2 (URGENT)
+controller 2 -> temporary gc_mode 3 (GREEDY)
+```
+
+Do not confuse these controller values with the underlying vendor `gc_mode` values.
+
+`fs/f2fs/tran_gc_wrapper_reconstructed.c` was corrected to preserve these exact numeric semantics.
+
+## Separate F2FS/GC policy routine
+
+`0x366cd4` is a **separate** vendor F2FS/GC policy routine. It invokes lower GC/helper paths and must not be merged with the controller wrapper at `0x37ada8`.
+
+Current mapped calls include:
+
+```text
+0x35cc18 -> GC policy predicate/helper family
+0x362c40 -> lower F2FS GC execution/migration path
+0x363288 -> cleanup/slow path
+0x341250 -> filesystem write/GC-balancing helper
+```
+
+Exact source-level naming of that larger policy routine remains the next differential task.
 
 ## Stock F2FS GC reconstruction status
 
 `fs/f2fs/gc_reconstructed.c` remains an inferred reconstruction, not recovered proprietary source. It is a scaffold and must not be presented as compile-ready or byte-equivalent.
 
-Historical Android/common 4.14 sources confirm the four-argument `f2fs_gc()` ABI and caller-owned GC mutex model.
+Historical Android/common 4.14 sources confirm the four-argument `f2fs_gc()` ABI and caller-owned GC mutex model. citeturn946769search8turn296107search0
 
 ## Vendor controls
 
@@ -331,9 +376,9 @@ Exact X683 member names remain unresolved.
 
 ## Current honest project status
 
-Binary-level GC architecture: ~88–90% confidence.
+Binary-level GC architecture: ~90% confidence.
 
-Source reconstruction: substantial but not final.
+Source reconstruction: substantial, with the controller wrapper now essentially exact but the larger vendor policy body still under reconstruction.
 
 Buildability: not established.
 
@@ -342,35 +387,32 @@ Replacement-kernel readiness: not established.
 High-confidence completed:
 - boot/Image verification;
 - critical F2FS layout/ABI mapping;
-- controller semantics;
+- detector/controller semantics;
 - Stop 1–5 state writes and operand chains;
-- recovered threshold arithmetic;
+- threshold arithmetic;
 - detector arming predicates;
-- state-3 wait helper identification;
-- `cgroup_freezing()` identification at `0x1051a8`;
-- `pm_freezing`, `pm_nosig_freezing`, `system_freezing_cnt` identification;
-- vendor-modified `freezing_slow_path()`-equivalent predicate at `0xcc774`;
-- `+0x974` producer and consumer role;
-- `__sb_start_write()` / `__sb_end_write()` role at `0x1eca60` / `0x1ec9e4`;
-- Transsion wrapper behavior;
-- vendor-control registration bindings;
-- stat_info offset map.
+- state-3 wait structure;
+- freezer subsystem identification;
+- vendor-modified freezer predicate;
+- `+0x974` producer/consumer role;
+- exact `tran_f2fs_gc()` controller wrapper at `0x37ada8`;
+- separation of wrapper and `0x366cd4` policy routine;
+- vendor-control registration bindings.
 
 Remaining high-value gaps:
-1. public/vendor identity and registration path of the `0x37acf8` event callback;
-2. exact state-3 control-flow integration around the resolved freezer predicates;
-3. exact vendor F2FS policy-body differential at `0x366cd4`;
-4. `tran_gc_usb_wakelock` path;
-5. exact stat_info member names;
-6. full exact stock-X683 `gc.c` differential;
-7. compilation/integration against the correct X683/H694 4.14.141 source tree.
+1. complete `0x366cd4` vendor F2FS policy-body reconstruction;
+2. exact semantic names of its helper calls and return values;
+3. `tran_gc_usb_wakelock` path;
+4. exact stat_info member names;
+5. full exact stock-X683 `gc.c` differential;
+6. compilation/integration against the correct X683/H694 4.14.141 source tree.
 
 ## Recent commits
 
-- `01b0343e0cb0de555dfd3ca6c2379d153b0219c5` — resolved `0x1eca60` / `0x1ec9e4` as superblock freeze-protection helpers.
-- `799cf3d7131ab0e24237a62e17ad7e5ecd42a117` — final state-3 freezer resolution.
-- `f121afada67d0c8bfacd772277db5718a4adc17b` — semantic freezer predicate reconstruction.
-- `89f35c65d64c6b5243639c497aa7f0ac20b4aa1a` — state-3 exact predicate evidence.
-- `ccdb49883812563f12bd03c296326e9f97edfcd5` — `cc774` final-resolution notes.
+- `718250acd83fe4fd033f75059720ee0afd9a4dc0` — corrected `tran_f2fs_gc()` source to exact controller/mode/ABI semantics.
+- `38fd69a4d61081c63e3cf6394f7b7cdba428ca5f` — exact `tran_f2fs_gc()` wrapper evidence.
+- `f9f447f02964165bdd442a2f0df46b779f9db7e7` — GC helper-cluster deep pass.
+- `85b8a278e9c20ffe8cf13f4f39e2229eaea24bee` — corrected `0x1eca60` identity.
+- `01b0343e0cb0de555dfd3ca6c2379d153b0219c5` — earlier synchronization mapping note.
 
 Use this file as the canonical continuation point in future chats. Read it from `main` before continuing.
