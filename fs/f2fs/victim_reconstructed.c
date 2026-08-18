@@ -1,7 +1,7 @@
 /*
  * X683/H694 F2FS victim-selection reconstruction.
  *
- * Reconstructed/inferred from the 4.15-era F2FS implementation and the
+ * Reconstructed/inferred from the 4.14/4.15-era F2FS implementation and the
  * recovered X683 segment-manager relationships. This is not proprietary
  * source recovery.
  */
@@ -39,7 +39,6 @@ static void x683_select_policy(struct f2fs_sb_info *sbi, int gc_type,
 		p->ofs_unit = sbi->segs_per_sec;
 	}
 
-	/* FG_GC scans all dirty entries; BG_GC is bounded. */
 	if (gc_type != FG_GC && p->max_search > sbi->max_victim_search)
 		p->max_search = sbi->max_victim_search;
 
@@ -93,13 +92,22 @@ static unsigned int x683_get_cb_cost(struct f2fs_sb_info *sbi,
 	return UINT_MAX - ((100 * (100 - u) * age) / (100 + u));
 }
 
+static unsigned int x683_get_greedy_cost(struct f2fs_sb_info *sbi,
+		unsigned int segno)
+{
+	unsigned int valid_blocks = get_valid_blocks(sbi, segno, true);
+
+	return IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
+			valid_blocks * 2 : valid_blocks;
+}
+
 static unsigned int x683_get_gc_cost(struct f2fs_sb_info *sbi,
 		unsigned int segno, struct victim_sel_policy *p)
 {
 	if (p->alloc_mode == SSR)
 		return get_seg_entry(sbi, segno)->ckpt_valid_blocks;
 	if (p->gc_mode == GC_GREEDY)
-		return get_valid_blocks(sbi, segno, true);
+		return x683_get_greedy_cost(sbi, segno);
 	return x683_get_cb_cost(sbi, segno);
 }
 
@@ -132,11 +140,6 @@ static unsigned int x683_count_bits(const unsigned long *addr,
 	return sum;
 }
 
-/*
- * Exact 4.15-era selection shape. The important ABI/layout correlations are:
- *   sbi -> sm_info -> dirty_info -> seglist_lock/victim_secmap/v_ops
- *   sbi -> sm_info -> sit_info -> sentry_lock/last_victim[]/mtime range
- */
 int x683_get_victim_by_default(struct f2fs_sb_info *sbi,
 		unsigned int *result, int gc_type, int type, char alloc_mode)
 {
@@ -237,12 +240,3 @@ out:
 	mutex_unlock(&dirty_i->seglist_lock);
 	return (p.min_segno == NULL_SEGNO) ? 0 : 1;
 }
-
-/*
- * The X683 stock binary must be checked against these predicates before this
- * is promoted from historical-equivalent reconstruction to stock-equivalent:
- *   - any vendor changes to select_gc_type()
- *   - any changes to max_victim_search
- *   - any alternate victim scoring
- *   - any additional section exclusion predicates
- */
