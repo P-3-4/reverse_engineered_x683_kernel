@@ -25,6 +25,7 @@ The project targets the Infinix X683/H694 MT6768 stock-equivalent 4.14.141-era k
 - `sbi + 0x408` = `user_block_count`
 - `sbi + 0x4b8` = `mount_opt.opt`
 - `sbi + 0x534` = `gc_mode`
+- `sbi + 0x568` = `struct f2fs_stat_info *`
 - `sm_info + 0x00` = `sit_info`
 - `sm_info + 0x08` = `free_info`
 - `sm_info + 0x10` = `dirty_info`
@@ -108,13 +109,6 @@ if ((s32)delta1 > (s32)threshold1)
     +0x9fc = 1;
 ```
 
-The multiplier branch is:
-
-- bucket 0 -> `0x800`, `d8c << 1`
-- bucket 1 -> `0xc00`, `d8c * 3`
-- bucket 2..3 -> `0x1000`, `d8c << 1`
-- bucket >=4 -> `0x1800`, `d8c << 2`
-
 ### Stop 2
 
 ```c
@@ -124,7 +118,7 @@ if ((s32)delta2 > (s32)threshold2)
     +0x9fc = 2;
 ```
 
-This path uses **unsigned** multiply (`umull`) before the `>>37` shift.
+This path uses **unsigned** multiply before the shift.
 
 ### Stop 3
 
@@ -139,70 +133,26 @@ if (scaled < reference)
     +0x9fc = 3;
 ```
 
-## Detector arming
+## Detector arming / state 3
 
-At `0x377120..0x377494`, the static detector performs filesystem-capacity and ratio checks and moves the detector into active state. The exact control-field stores are preserved in:
+At `0x377120..0x377494`, static arming performs filesystem-capacity and ratio checks. State 3 is entered with `+0x9d4=3`; the subsequent runtime path performs a timed wait/recheck before returning to metric collection.
 
-`docs/reverse-engineering/tran-gc-detector-arming-deep-pass.md`
+Relevant direct helpers remain:
 
-The common continuation enables detection and reaches state 3.
+- `0xce58c`: timeout conversion helper
+- `0x57554`: current-task scheduler/reschedule flag check
+- `0x9c688`: wait-entry initializer
+- `0x9c6e8`: waitqueue insertion/setup
+- `0x9c8d0`: wait completion/removal
+- `0xe06684`: mutex lock path
+- `0xe0693c`: mutex trylock path
+- `0xcc774`: vendor/task-state predicate, exact semantics unresolved
 
-## State 3 runtime — exact current reconstruction
-
-At `0x377494`:
-
-```text
-+0x9d4 = 3
-vendor-state +0x158 = 1
-```
-
-Then:
-
-1. Load timeout source at controller/vendor `+0xd94`.
-2. If the alternate runtime branch is taken, overwrite `+0xd94` with literal `500`.
-3. Call `0xce58c` to convert the timeout value to scheduler units.
-4. Initialize a waitqueue entry on the stack through `0x9c688`.
-5. Queue the wait through `0x9c6e8`.
-6. Recheck task scheduler state with `0x57554`.
-7. Check controller-object `+0x20` and vendor global `+0x974` as exit/abort gates.
-8. Return to `0x377570` for metric collection after timeout/wake.
-
-### Timeout helper `0xce58c`
-
-For nonnegative values used by this state-3 path:
-
-```c
-return (ms + 3) >> 2;
-```
-
-Thus the literal `500` path converts to `125` scheduler-time units in the recovered helper.
-
-### `0x57554`
-
-This helper reads the current task flags and extracts a scheduler/reschedule bit. It is the standard kernel task-state fast-check used around the timed wait. The exact vendor semantic meaning of the surrounding wait-loop gate remains unresolved.
-
-### Waitqueue helpers
-
-`0x9c688` is the wait-entry initializer.
-
-`0x9c6e8` is the enqueue/sleep helper. The state-3 block is therefore a real timed wait/scheduler path, not a busy loop.
-
-### Runtime guards
-
-At `0x3774b8..0x37754c`:
-
-- controller-object `+0x20 != 0` diverts to an exit/alternate path;
-- vendor global `+0x974 != 0` diverts to the exit path;
-- otherwise the timed wait is maintained and rechecked;
-- helper `0xcc774` is used on a nested filesystem/task-state branch before returning to the wait condition.
-
-The exact semantic names of these two vendor gates are still unresolved.
+Runtime guards include controller-object `+0x20` and vendor global `+0x974`.
 
 ## Stop 4 / Stop 5
 
 ### Stop 4
-
-Direct stock behavior:
 
 ```text
 threshold predicate true
@@ -235,17 +185,68 @@ controller 1 -> temporary gc_mode=2 (GREEDY), call f2fs_gc(...,-1), restore
 controller 2 -> temporary gc_mode=3 (URGENT), call f2fs_gc(...,-1), restore
 ```
 
-## Next target
+## Vendor control registration
 
-Resolve the helper call targets and the remaining state-3 predicates:
+Named controls are registered through a common runtime object at `Image + 0x1a13a20` and common registration layer `0x274ea0 -> 0x274dac`.
+
+Confirmed bindings:
 
 ```text
-0x377494..0x377570
-    -> 0x57554 task-state helper
-    -> 0xcc774 nested filesystem/task-state check
-    -> 0xe06684 / 0xe0693c metric helpers
-    -> 0x1eca60 scheduler bookkeeping helper
-    -> exact wake sources and vendor semantic names for +0x974 / controller +0x20
+need_switch_ssr
+  registration 0x37af88
+  descriptor 0x173b9d0
+
+tran_urgent_gc
+  registration 0x37b068
+  descriptor 0x173bbb0
+
+detect_charger_type
+  registration 0x37b184
+  descriptor 0x173bf70
 ```
 
-Then integrate these exact runtime transitions into `tran_gc_thread_reconstructed.c` and proceed to `0x37b5d4..0x37b8c0` threshold/helper reconstruction.
+These are control/data descriptors, not proven standalone implementation functions. `tran_gc_usb_wakelock` remains on a separate, unresolved path.
+
+## `stat_info` reconstruction
+
+A new binary-derived map is committed in `docs/reverse-engineering/x683-stat-info-reconstruction.md`.
+
+Direct GC evidence establishes:
+
+```text
+sbi + 0x568 -> stat_info
+
+stat + 0x164:
+    load, +1, store
+
+stat + 0x174:
+    load, +1, store
+stat + 0x184:
+    load, add local w11, store
+
+stat + 0x178:
+    load, +1, store
+stat + 0x188:
+    load, add local w11, store
+
+stat + 0x18c:
+    load, +1, store
+stat + 0x190:
+    load, +1, store
+stat + 0x198:
+    load, add local w12, store
+```
+
+`+0x170` is part of the same preceding segment-accounting family, but its exact update semantics still require the immediately preceding basic block to be mapped. Exact historical member names remain intentionally unresolved.
+
+Important: `sbi + 0x570..0x5dc` are separate SBI fields, not `stat_info` members. Older hypotheses for `0x5d4/0x5d8/0x5dc` remain candidates only and have not been promoted to facts.
+
+## Current unresolved high-value targets
+
+1. Trace reads/logging of `stat_info + 0x164..0x198` and bind them to the vendor debug control names (`gc_times`, `gc_segment_info`, `written_data`, etc.).
+2. Recover the remaining X683 `stat_info` layout before assigning historical F2FS member names.
+3. Resolve `tran_gc_usb_wakelock`'s separate registration/use path.
+4. Finish the `0x37b5d4..0x37b8c0` GC threshold/helper reconstruction.
+5. Compare complete stock `f2fs_gc()` against the closest historical 4.14 F2FS revision and classify the vendor delta.
+
+All reconstructed source remains explicitly reconstructed/inferred and must not be represented as proprietary Transsion source.
