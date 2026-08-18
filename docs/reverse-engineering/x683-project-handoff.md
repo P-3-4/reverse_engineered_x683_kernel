@@ -63,190 +63,183 @@ Transsion wrapper passes `NULL_SEGNO` (`-1`).
 - `+0xa08`: signed segment baseline
 - `+0xa0c`: recoverable/written baseline
 
-## Detector input reconstruction
+## Detector / Stop conditions
 
-At `0x377570` onward:
+At `0x377570` onward the detector derives `user_segments`, `sit_segments`, and recoverable/free-segment quantities.
+
+### Stop 1
+
+`0x377720` performs a signed `delta1 > threshold1` comparison and writes `+0x9fc=1`.
+
+### Stop 2
+
+`0x377770` performs a signed second-delta comparison and writes `+0x9fc=2`.
+
+### Stop 3
+
+`0x3777d0` performs a signed 64-bit scaled-movement `< reference` comparison and writes `+0x9fc=3`.
+
+### Stop 4
+
+`0x3777f0` compares the vendor delta against the threshold at vendor state `+0xd90`; true path writes `+0x998=2` unless `+0x9c0` blocks it, then `+0x9f8=1`, with the SSR-switch log.
+
+### Stop 5
+
+`+0xa04` selects 50/500 cycles; the periodic no-progress path writes `+0x998=2` and `+0x9f8=2`.
+
+## Exact GC threshold/helper reconstruction
+
+The direct disassembly of `0x37b580..0x37b8c0` is now reconstructed in:
+
+`docs/reverse-engineering/gc-threshold-helper-exact-reconstruction.md`
+
+and the corresponding reconstructed source is:
+
+`fs/f2fs/tran_gc_threshold_reconstructed.c`
+
+### `0x37b580`
+
+Binary arithmetic:
 
 ```c
-sm = SM_I(sbi);
-sit = sm->sit_info;
-free_i = sm->free_info;
-dirty_i = sm->dirty_info;
-
-user_segments = sbi->user_block_count >> sbi->log_blocks_per_seg;
-sit_segments = (*(u32 *)((char *)sit + 0x10)) >> sbi->log_blocks_per_seg;
-
-recoverable = 0;
-for (i = 0; i < 6; i++)
-    recoverable += *(u32 *)((char *)dirty_i + 0x68 + i * 4);
+user_segments = user_block_count >> log_blocks_per_seg;
+sit_segments  = sit_blocks >> log_blocks_per_seg;
+span          = user_segments - sit_segments;
+free_percent  = free_segments * 100 / span;
+fragmentation = 100 - free_percent;
 ```
 
-The detector derives a capacity bucket:
+It logs:
+
+```text
+"f2fs alloc new segment and fragmentation is %lu"
+```
+
+Exact proprietary source name remains unproven; reconstructed name is `x683_calc_fragmentation_percent()`.
+
+### `0x37b5d4..0x37b748`
+
+This is one boolean policy helper, directly called from detector locations `0x377104` and `0x377de8`. It returns `1` on either of the Stop-2/Stop-3 predicates and otherwise reaches its diagnostic logging path and returns `0`.
+
+Exact scale selection is:
 
 ```c
-bucket = (user_segments >> 13) & 0x7ffff;
+if ((user_segments >> 15) == 0)
+    scale = table_0x4d4[user_segments >> 13];
+else
+    scale = 0x1800;
 ```
 
-Stop-1 and Stop-2 use the table at image offset `+0x4e4`, with entries:
+where table `Image+0x4d4` is:
+
+```text
+{0x800, 0xc00, 0x1000, 0x1000}
+```
+
+Vendor selector:
+
+```c
+selector = max(*(u8 *)0x1a13890, *(u8 *)0x1a13894);
+```
+
+Factor table at `Image+0x4e4`:
 
 ```text
 {100,100,100,80,80,80,60,60}
 ```
 
-Stop-3 uses a separate 64-bit table at image address corresponding to `0xe74000 + 0x610`, with entries:
+Stop-2 predicate:
+
+```c
+delta = (s32)(free_segments - reserved_segments);
+threshold = (factor * scale * 0x51EB851F) >> 37;
+if (delta > threshold)
+    return 1;
+```
+
+`0x51EB851F / 2^37 ~= 0.01`.
+
+Stop-3 predicate:
+
+```c
+span = (s64)user_segments - (s64)sit_segments;
+reference = (s64)(s32)(free_segments - reserved_segments);
+p = table64[selector] * span;
+high = smulh(p, 0xA3D70A3D70A3D70B);
+scaled = (high + p) >> 6;
+scaled += (p < 0);
+if (scaled < reference)
+    return 1;
+```
+
+64-bit table at `Image+0xe74610`:
 
 ```text
 {80,80,80,70,70,70,60,60}
 ```
 
-### Stop 1
-
-```c
-delta1 = recoverable - controller->saved_baseline;
-selected_scale = vendor_global_d8c * {1,2,3,4};
-threshold1 = factor[bucket] * selected_scale * 0x51EB851F >> 37;
-if ((s32)delta1 > (s32)threshold1)
-    +0x9fc = 1;
-```
-
-### Stop 2
-
-```c
-delta2 = recoverable - reserved_segments;
-threshold2 = factor[bucket] * selected_base * 0x51EB851F >> 37;
-if ((s32)delta2 > (s32)threshold2)
-    +0x9fc = 2;
-```
-
-This path uses **unsigned** multiply before the shift.
-
-### Stop 3
-
-```c
-span = (s64)(user_segments - sit_segments);
-prod = table2[bucket] * span;
-high = smulh(prod, 0xA3D70A3D70A3D70B);
-scaled = (high + prod) >> 6;
-scaled += (prod < 0);
-reference = (s64)(s32)(recoverable - reserved_segments);
-if (scaled < reference)
-    +0x9fc = 3;
-```
-
-## Detector arming / state 3
-
-At `0x377120..0x377494`, static arming performs filesystem-capacity and ratio checks. State 3 is entered with `+0x9d4=3`; the subsequent runtime path performs a timed wait/recheck before returning to metric collection.
-
-Relevant direct helpers remain:
-
-- `0xce58c`: timeout conversion helper
-- `0x57554`: current-task scheduler/reschedule flag check
-- `0x9c688`: wait-entry initializer
-- `0x9c6e8`: waitqueue insertion/setup
-- `0x9c8d0`: wait completion/removal
-- `0xe06684`: mutex lock path
-- `0xe0693c`: mutex trylock path
-- `0xcc774`: vendor/task-state predicate, exact semantics unresolved
-
-Runtime guards include controller-object `+0x20` and vendor global `+0x974`.
-
-## Stop 4 / Stop 5
-
-### Stop 4
+When both predicates fail, the helper computes diagnostic values and logs:
 
 ```text
-threshold predicate true
--> controller +0x998 = 2 unless +0x9c0 blocks
--> +0x9f8 = 1
--> SSR-trigger log
+"free_segment=%d, fix_size=%d, left_space=%d(precent:%d)"
 ```
 
-### Stop 5
+The `0x37b6d8..0x37b748` sequence is a continuation of the same helper, not a separate function boundary.
 
-```c
-interval = +0xa04 ? 500 : 50;
-if (cycle % interval == 0) {
-    progress = current_sit_component +
-               (current_recoverable - baseline_recoverable);
-    if (progress <= baseline_segment) {
-        controller = 2;
-        +0x9f8 = 2;
-    }
-}
-```
+### Post-helper range
 
-## Transsion wrapper
+`0x37b74c..0x37b8c0` transitions into generic vendor control/attribute helpers:
 
-At `0x37ada8`:
+- `0x37b74c -> 0x38ba24`
+- `0x37b76c -> 0x37bedc` descriptor/list helper
+- `0x37b7cc` bit-state getter
+- `0x37b7e0 / 0x37b844` type-gated operation wrappers
+- `0x37b8a8 -> 0x03bb48`, return bit0
+- `0x37b8c4` byte getter
+- `0x37b8d8` byte/state update path
+
+These are not being labeled as GC policy functions without a direct call/data-flow proof.
+
+## Detector state 3
+
+At `0x377494`, `+0x9d4=3`; the path performs the confirmed timed wait/recheck sequence using the waitqueue and scheduler helpers previously documented.
+
+## Vendor controls
+
+Named controls are registered through the common runtime object at `Image+0x1a13a20`:
 
 ```text
-controller 0 -> normal f2fs_gc
-controller 1 -> temporary gc_mode=2 (GREEDY), call f2fs_gc(...,-1), restore
-controller 2 -> temporary gc_mode=3 (URGENT), call f2fs_gc(...,-1), restore
+need_switch_ssr     -> descriptor 0x173b9d0
+tran_urgent_gc      -> descriptor 0x173bbb0
+detect_charger_type -> descriptor 0x173bf70
 ```
 
-## Vendor control registration
+They are per-control data descriptors, not proven standalone function symbols. `tran_gc_usb_wakelock` remains separate/unresolved.
 
-Named controls are registered through a common runtime object at `Image + 0x1a13a20` and common registration layer `0x274ea0 -> 0x274dac`.
+## stat_info
 
-Confirmed bindings:
+`sbi+0x568` is a pointer to a separate vendor-divergent statistics object.
+
+Confirmed direct members:
 
 ```text
-need_switch_ssr
-  registration 0x37af88
-  descriptor 0x173b9d0
-
-tran_urgent_gc
-  registration 0x37b068
-  descriptor 0x173bbb0
-
-detect_charger_type
-  registration 0x37b184
-  descriptor 0x173bf70
++0x164 incremented
++0x174 incremented
++0x184 accumulated
++0x178 incremented
++0x188 accumulated
++0x18c incremented
++0x190 incremented
++0x198 accumulated
 ```
 
-These are control/data descriptors, not proven standalone implementation functions. `tran_gc_usb_wakelock` remains on a separate, unresolved path.
+Exact source member names remain unresolved. `sbi+0x570..0x5dc` are separate SBI fields, not stat_info members.
 
-## `stat_info` reconstruction
+## Current next target
 
-A new binary-derived map is committed in `docs/reverse-engineering/x683-stat-info-reconstruction.md`.
+1. Complete the generic attribute/control helper path after `0x37b74c` and bind descriptor values to actual reads/writes.
+2. Independently prove the six `dirty_info +0x68..0x7c` entries.
+3. Function-level diff stock X683 `f2fs_gc()` against the closest historical 4.14 F2FS baseline.
+4. Classify the exact X683 vendor delta and replace provisional source accordingly.
 
-Direct GC evidence establishes:
-
-```text
-sbi + 0x568 -> stat_info
-
-stat + 0x164:
-    load, +1, store
-
-stat + 0x174:
-    load, +1, store
-stat + 0x184:
-    load, add local w11, store
-
-stat + 0x178:
-    load, +1, store
-stat + 0x188:
-    load, add local w11, store
-
-stat + 0x18c:
-    load, +1, store
-stat + 0x190:
-    load, +1, store
-stat + 0x198:
-    load, add local w12, store
-```
-
-`+0x170` is part of the same preceding segment-accounting family, but its exact update semantics still require the immediately preceding basic block to be mapped. Exact historical member names remain intentionally unresolved.
-
-Important: `sbi + 0x570..0x5dc` are separate SBI fields, not `stat_info` members. Older hypotheses for `0x5d4/0x5d8/0x5dc` remain candidates only and have not been promoted to facts.
-
-## Current unresolved high-value targets
-
-1. Trace reads/logging of `stat_info + 0x164..0x198` and bind them to the vendor debug control names (`gc_times`, `gc_segment_info`, `written_data`, etc.).
-2. Recover the remaining X683 `stat_info` layout before assigning historical F2FS member names.
-3. Resolve `tran_gc_usb_wakelock`'s separate registration/use path.
-4. Finish the `0x37b5d4..0x37b8c0` GC threshold/helper reconstruction.
-5. Compare complete stock `f2fs_gc()` against the closest historical 4.14 F2FS revision and classify the vendor delta.
-
-All reconstructed source remains explicitly reconstructed/inferred and must not be represented as proprietary Transsion source.
+All reconstructed code remains explicitly reconstructed/inferred and is not claimed as proprietary Transsion source.
