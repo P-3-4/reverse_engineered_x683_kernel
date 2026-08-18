@@ -2,12 +2,13 @@
  * X683/H694 F2FS GC reconstruction.
  * Reconstructed/inferred code, not recovered proprietary source.
  * Target ABI: stock X683 f2fs_gc(sbi, sync, background, segno).
+ *
+ * Important ownership rule: historical 4.14 callers acquire gc_mutex before
+ * calling f2fs_gc(); this function therefore does not unlock gc_mutex on exit.
  */
-
 #include "f2fs.h"
 #include "segment.h"
 
-/* 4.14-era lineage retains mutex sentry_lock; 4.15 later changed this. */
 static int x683_get_victim(struct f2fs_sb_info *sbi,
 		unsigned int *victim, int gc_type)
 {
@@ -21,7 +22,6 @@ static int x683_get_victim(struct f2fs_sb_info *sbi,
 	return ret;
 }
 
-/* Returns 1 only when the whole victim section was reclaimed. */
 static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		unsigned int start_segno, struct gc_inode_list *gc_list,
 		int gc_type)
@@ -39,25 +39,18 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		f2fs_ra_meta_pages(sbi, GET_SUM_BLOCK(sbi, segno),
 				sbi->segs_per_sec, META_SSA, true);
 
-	while (segno < end_segno) {
-		sum_page = f2fs_get_sum_page(sbi, segno++);
-		if (IS_ERR(sum_page))
-			continue;
-		unlock_page(sum_page);
-	}
-
 	blk_start_plug(&plug);
 
 	for (segno = start_segno; segno < end_segno; segno++) {
-		sum_page = find_get_page(META_MAPPING(sbi),
-				GET_SUM_BLOCK(sbi, segno));
-		if (!sum_page)
+		sum_page = f2fs_get_sum_page(sbi, segno);
+		if (IS_ERR(sum_page))
 			continue;
 
-		f2fs_put_page(sum_page, 0);
 		if (get_valid_blocks(sbi, segno, false) == 0 ||
-				!PageUptodate(sum_page) || f2fs_cp_error(sbi))
-			goto next;
+				!PageUptodate(sum_page) || f2fs_cp_error(sbi)) {
+			f2fs_put_page(sum_page, 0);
+			continue;
+		}
 
 		sum = page_address(sum_page);
 		if (type == SUM_TYPE_NODE)
@@ -69,7 +62,7 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		if (gc_type == FG_GC &&
 				get_valid_blocks(sbi, segno, false) == 0)
 			seg_freed++;
-next:
+
 		f2fs_put_page(sum_page, 0);
 	}
 
@@ -83,10 +76,6 @@ next:
 	return (gc_type == FG_GC && seg_freed == sbi->segs_per_sec);
 }
 
-/*
- * Stock X683 entry ABI has a fourth segment argument. The vendor wrapper
- * passes NULL_SEGNO (-1), which means normal victim selection.
- */
 int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
 		unsigned int requested_segno)
 {
@@ -129,9 +118,6 @@ gc_more:
 			gc_type == FG_GC)
 		sec_freed++;
 
-	if (gc_type == FG_GC)
-		sbi->cur_victim_sec = NULL_SEGNO;
-
 	if (!sync) {
 		if (has_not_enough_free_secs(sbi, sec_freed, 0)) {
 			segno = NULL_SEGNO;
@@ -142,7 +128,6 @@ gc_more:
 	}
 
 stop:
-	mutex_unlock(&sbi->gc_mutex);
 	put_gc_inode(&gc_list);
 
 	if (sync)
