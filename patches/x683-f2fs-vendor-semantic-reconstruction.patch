@@ -85,7 +85,7 @@ new file mode 100644
 +		return v < (p >> 3);
 +	case 5:
 +		return X683_SBI_S32(sbi, 0x43c) <
-+		       (s64)x683_umulh(delta, 0xccccccccccccccccULL);
++		       (s64)(x683_umulh(delta, 0xcccccccccccccccdULL) >> 2);
 +	default:
 +		/* Binary jump-table default is the selector-2 body. */
 +		return *(const u32 *)((const char *)sbi->sb->s_fs_info + 0x1c8) == 0;
