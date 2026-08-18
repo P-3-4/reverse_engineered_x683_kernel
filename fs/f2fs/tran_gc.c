@@ -9,12 +9,14 @@
  */
 #include "f2fs.h"
 
+/* Controller values at image +0x1a13998. */
 #define X683_CTRL_NORMAL 0
-#define X683_CTRL_GREEDY 1
-#define X683_CTRL_URGENT 2
+#define X683_CTRL_URGENT 1
+#define X683_CTRL_GREEDY 2
 
-#define X683_FORCE_GREEDY 2
-#define X683_FORCE_URGENT 3
+/* sbi->gc_mode values forced by the controller. */
+#define X683_FORCE_URGENT 2
+#define X683_FORCE_GREEDY 3
 
 struct x683_tran_gc_state {
 	u64 cycle;                 /* +0x990 */
@@ -140,8 +142,9 @@ static bool x683_state3_recheck(struct x683_tran_gc_state *st,
 }
 
 /*
- * Recovered wrapper semantics at 0x37ada8..0x37af00.
- * The stock wrapper forces gc_mode only for controller 1/2 and restores it.
+ * Recovered wrapper semantics at 0x37ada8..0x37ae94.
+ * Controller 1 forces gc_mode 2 (URGENT); controller 2 forces
+ * gc_mode 3 (GREEDY). Both restore the previous mode after f2fs_gc().
  */
 int x683_tran_gc_execute(struct f2fs_sb_info *sbi, bool sync,
 		bool background, u32 controller)
@@ -153,10 +156,10 @@ int x683_tran_gc_execute(struct f2fs_sb_info *sbi, bool sync,
 		return f2fs_gc(sbi, sync, background, NULL_SEGNO);
 
 	old_gc_mode = sbi->gc_mode;
-	if (controller == X683_CTRL_GREEDY)
-		sbi->gc_mode = X683_FORCE_GREEDY;
-	else if (controller == X683_CTRL_URGENT)
+	if (controller == X683_CTRL_URGENT)
 		sbi->gc_mode = X683_FORCE_URGENT;
+	else if (controller == X683_CTRL_GREEDY)
+		sbi->gc_mode = X683_FORCE_GREEDY;
 	else
 		return -EINVAL;
 
