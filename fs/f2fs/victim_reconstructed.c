@@ -1,23 +1,33 @@
 /*
  * X683/H694 F2FS victim-selection reconstruction.
  *
- * Reconstructed/inferred from the 4.14/4.15-era F2FS implementation and the
- * recovered X683 segment-manager relationships. This is not proprietary
- * source recovery.
+ * Reconstructed/inferred from nearby F2FS revisions and recovered X683
+ * segment-manager relationships. This is not proprietary source recovery.
  */
 
 #include "f2fs.h"
 #include "segment.h"
 
-static int x683_select_gc_type(struct f2fs_gc_kthread *gc_th, int gc_type)
+/*
+ * X683 resolves sbi+0x534 as gc_mode. The nearby 4.14/early-5.0
+ * lineage used four policy states: NORMAL, IDLE_CB, IDLE_GREEDY, URGENT.
+ * Later AT/URGENT_HIGH/LOW/MID states are intentionally not imported.
+ */
+static int x683_select_gc_type(struct f2fs_sb_info *sbi, int gc_type)
 {
 	int gc_mode = (gc_type == BG_GC) ? GC_CB : GC_GREEDY;
 
-	if (gc_th && gc_th->gc_idle) {
-		if (gc_th->gc_idle == 1)
-			gc_mode = GC_CB;
-		else if (gc_th->gc_idle == 2)
-			gc_mode = GC_GREEDY;
+	switch (sbi->gc_mode) {
+	case GC_IDLE_CB:
+		gc_mode = GC_CB;
+		break;
+	case GC_IDLE_GREEDY:
+	case GC_URGENT:
+		gc_mode = GC_GREEDY;
+		break;
+	case GC_NORMAL:
+	default:
+		break;
 	}
 	return gc_mode;
 }
@@ -33,7 +43,7 @@ static void x683_select_policy(struct f2fs_sb_info *sbi, int gc_type,
 		p->max_search = dirty_i->nr_dirty[type];
 		p->ofs_unit = 1;
 	} else {
-		p->gc_mode = x683_select_gc_type(sbi->gc_thread, gc_type);
+		p->gc_mode = x683_select_gc_type(sbi, gc_type);
 		p->dirty_segmap = dirty_i->dirty_segmap[DIRTY];
 		p->max_search = dirty_i->nr_dirty[DIRTY];
 		p->ofs_unit = sbi->segs_per_sec;
@@ -144,7 +154,7 @@ int x683_get_victim_by_default(struct f2fs_sb_info *sbi,
 		unsigned int *result, int gc_type, int type, char alloc_mode)
 {
 	struct dirty_seglist_info *dirty_i = DIRTY_I(sbi);
-	struct sit_info *sm = SIT_I(sbi);
+	struct sit_info *sit_i = SIT_I(sbi);
 	struct victim_sel_policy p;
 	unsigned int secno, last_victim;
 	unsigned int last_segment = MAIN_SEGS(sbi);
@@ -168,7 +178,7 @@ int x683_get_victim_by_default(struct f2fs_sb_info *sbi,
 	if (p.max_search == 0)
 		goto out;
 
-	last_victim = sm->last_victim[p.gc_mode];
+	last_victim = sit_i->last_victim[p.gc_mode];
 	if (p.alloc_mode == LFS && gc_type == FG_GC) {
 		p.min_segno = x683_check_bg_victims(sbi);
 		if (p.min_segno != NULL_SEGNO)
@@ -176,14 +186,14 @@ int x683_get_victim_by_default(struct f2fs_sb_info *sbi,
 	}
 
 	while (1) {
-		unsigned long cost;
+		unsigned int cost;
 		unsigned int segno;
 
 		segno = find_next_bit(p.dirty_segmap, last_segment, p.offset);
 		if (segno >= last_segment) {
-			if (sm->last_victim[p.gc_mode]) {
-				last_segment = sm->last_victim[p.gc_mode];
-				sm->last_victim[p.gc_mode] = 0;
+			if (sit_i->last_victim[p.gc_mode]) {
+				last_segment = sit_i->last_victim[p.gc_mode];
+				sit_i->last_victim[p.gc_mode] = 0;
 				p.offset = 0;
 				continue;
 			}
@@ -215,11 +225,11 @@ int x683_get_victim_by_default(struct f2fs_sb_info *sbi,
 		}
 next:
 		if (nsearched >= p.max_search) {
-			if (!sm->last_victim[p.gc_mode] && segno <= last_victim)
-				sm->last_victim[p.gc_mode] = last_victim + 1;
+			if (!sit_i->last_victim[p.gc_mode] && segno <= last_victim)
+				sit_i->last_victim[p.gc_mode] = last_victim + 1;
 			else
-				sm->last_victim[p.gc_mode] = segno + 1;
-			sm->last_victim[p.gc_mode] %= MAIN_SEGS(sbi);
+				sit_i->last_victim[p.gc_mode] = segno + 1;
+			sit_i->last_victim[p.gc_mode] %= MAIN_SEGS(sbi);
 			break;
 		}
 	}
