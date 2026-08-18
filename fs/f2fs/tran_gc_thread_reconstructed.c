@@ -30,6 +30,7 @@ struct x683_tran_gc_vendor_state {
 	u32 stop_condition;           /* +0x9fc */
 	s32 baseline_segment;         /* +0xa08 */
 	u32 baseline_written;         /* +0xa0c */
+	s32 saved_sit_segments;       /* detector stack/sp+0x28 baseline */
 	u64 cycle;                    /* +0x990 */
 };
 
@@ -123,13 +124,6 @@ static void x683_arm_detector(struct f2fs_sb_info *sbi,
 	dirty_tenth = (u32)(((u64)m.user_segments *
 				0xAAAAAAAAAAAAAAABULL) >> 67);
 
-	/*
-	 * Binary-confirmed static gates. The final two guards correspond to the
-	 * vendor capacity checks around the 13*user_blocks and 27*sit_blocks
-	 * fixed-point expressions; their surrounding producer semantics remain
-	 * vendor-specific, so keep them explicit here rather than inventing field
-	 * aliases.
-	 */
 	user_guard = x683_pct(13U * m.user_block_count);
 	sit_guard = x683_pct(27U * m.sit_blocks);
 
@@ -232,7 +226,7 @@ static bool x683_stop5(struct x683_tran_gc_vendor_state *v,
 
 static void x683_run_detector(struct f2fs_sb_info *sbi,
 			       struct x683_tran_gc_vendor_state *v,
-			       s32 delta1, s32 threshold1,
+			       s32 threshold1,
 			       s32 delta2, s32 threshold2,
 			       s64 scaled3, s64 reference3,
 			       s32 threshold4)
@@ -249,7 +243,7 @@ static void x683_run_detector(struct f2fs_sb_info *sbi,
 	    x683_stop3(v, scaled3, reference3) ||
 	    x683_stop4(v, (s32)v->running_max,
 			(s32)m.recoverable_segments,
-			v->baseline_segment,
+			v->saved_sit_segments,
 			(s32)m.sit_segments,
 			threshold4) ||
 	    x683_stop5(v, (s32)m.sit_segments,
