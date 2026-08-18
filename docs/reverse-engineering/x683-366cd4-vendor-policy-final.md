@@ -1,325 +1,291 @@
-# X683/H694 — `0x366cd4` vendor GC policy/orchestration final reconstruction
+# X683/H694 — `0x366cd4` vendor GC policy/orchestration
 
 ## Authority
 
-Direct stock X683/H694 Image evidence is authoritative. This document is binary-derived and is not recovered proprietary Transsion source.
+Fresh analysis of the stock X683/H694 Image extracted from the supplied boot image. This is binary-derived reconstruction, not recovered proprietary Transsion source.
 
-## 1. Function boundary
+Boot SHA-256:
+
+`a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
+
+Image SHA-256:
+
+`96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
+
+## 1. Correct function boundary
 
 ```text
-0x366cd4 .. 0x366edc = vendor GC policy/orchestration
+0x366cd4 .. 0x366f2c
 ```
 
-It is distinct from:
+`0x366f2c` is the stack-canary failure tail. The next normal function begins at `0x366f30`.
+
+This supersedes the older `0x366cd4..0x366edc` boundary.
+
+## 2. Entry / first policy ladder
 
 ```text
-0x37ada8 .. 0x37ae94 = tran_f2fs_gc() controller wrapper
-0x3503a8             = actual four-argument f2fs_gc()
+sbi + 0x48 bit3
+    set -> return
+
+policy(sbi,4)
+    false -> 0x373108(sbi,0x80)
+
+policy(sbi,1)
+    false -> 0x35d22c(sbi,455)
+
+policy(sbi,0)
+    true  -> 0x362c40(sbi,0,0)
+    false -> 0x363288(sbi,0xe38)
 ```
 
-## 2. Exact first policy ladder
+## 3. Seven-field discriminator
 
-Entry:
+For `gc_mode != 3`:
 
 ```text
-sbi + 0x48 bit 3 set
++0x44c != 0 -> 0x366da4
++0x450 != 0 -> 0x366da4
++0x454 != 0 -> 0x366da4
++0x448 != 0 -> 0x366da4
++0x444 != 0 -> 0x366da4
++0x45c != 0 -> 0x366da4
++0x458 == 0 -> 0x366ee0
++0x458 != 0 -> 0x366da4
+```
+
+Therefore these seven fields are **not** an all-zero prerequisite for normal execution. They discriminate between:
+
+```text
+any nonzero -> active guarded path
+all zero    -> clean/alternate path
+```
+
+`gc_mode == 3` bypasses this discriminator and enters at `0x366de4`.
+
+The seven original source-level field names remain unresolved.
+
+## 4. Active guarded path
+
+At `0x366da4` the binary computes:
+
+```text
+obj = *(sbi + 0x70)
+scaled = obj[0x04] * obj[0x18] * 0x51EB851F >> 37
+current = obj[0x80]
+```
+
+Then:
+
+```text
+current >= scaled
+    -> 0x366de4
+
+current < scaled AND
+sbi+0x434 < 8*(u32)sbi+0x3dc
     -> return
+
+otherwise
+    -> 0x366de4
 ```
 
-Then the vendor selector helper at `0x35cc18` is used with exact immediates:
+The reciprocal multiply/shift sequence is byte-proven.
+
+## 5. Shared secondary policy
+
+At `0x366de4`:
 
 ```text
-policy(sbi, 4)
-    false -> 0x373108(sbi, 0x80)
-
-policy(sbi, 1)
-    false -> 0x35d22c(sbi, 455)
-
-policy(sbi, 0)
-    true  -> 0x362c40(sbi, 0, 0)
-    false -> 0x363288(sbi, 0xE38)
+policy(sbi,1) == false -> terminal
+policy(sbi,3) == false -> terminal
 ```
 
-The selector meanings are still anonymous. The branch relationships are proven.
-
-## 3. Seven-field SBI guard
-
-For `gc_mode != 3`, the stock thread code evaluates the following exact sequence:
+Then:
 
 ```text
-sbi + 0x44c -> nonzero => common guarded branch
-sbi + 0x450 -> nonzero => common guarded branch
-sbi + 0x454 -> nonzero => common guarded branch
-sbi + 0x448 -> nonzero => common guarded branch
-sbi + 0x444 -> nonzero => common guarded branch
-sbi + 0x45c -> nonzero => common guarded branch
-sbi + 0x458 -> zero    => continue normal path
-             nonzero => common guarded branch
+obj    = *(sbi + 0x80)
+nested = *(obj + 0x10)
+left   = *(u32 *)(obj + 0x64)
+right  = *(u32 *)(nested + 0x84)
+
+right > left -> terminal
 ```
 
-Therefore the normal path requires:
+A second fixed-point capacity test and `sbi+0x434` versus `8*sbi+0x3dc` comparison follow.
+
+Finally:
 
 ```text
-0x44c == 0
-0x450 == 0
-0x454 == 0
-0x448 == 0
-0x444 == 0
-0x45c == 0
-0x458 == 0
+value  = 250 * sbi+0x1c8 + sbi+0x198
+global = *(u64 *)(Image + 0x16c6980)
+
+value >= global -> return
+value < global  -> terminal
 ```
 
-The first six are short-circuit tests. `+0x458` is reached only after they are all zero.
+## 6. Clean/alternate path
 
-No symbolic source names are assigned to these seven fields.
+The all-zero seven-field case reaches `0x366ee0`.
 
-## 4. `gc_mode == 3` branch
-
-The mode read is:
-
-```c
-mode = *(u32 *)((char *)sbi + 0x534);
-```
-
-`mode == 3` selects a separate branch before the seven-field non-mode-3 ladder. Therefore those seven fields are not universal gates.
-
-The latest controller mapping is:
+The object at `sbi+0x80` is checked:
 
 ```text
-controller 1 -> gc_mode 2 (URGENT)
-controller 2 -> gc_mode 3 (GREEDY)
+obj = *(sbi + 0x80)
+child = *(obj + 0xa0)
+child[0x2090] != 0 -> 0x366da4
+
+list = *(obj + 0x98)
+list[0x24] != 0 -> 0x366da4
 ```
 
-So a controller-state write of `2` must not be described as an "urgent" action.
-
-## 5. First fixed-point/capacity guard
-
-After the normal seven-field gate, the function enters a percentage-like fixed-point check using an object reached from `sbi + 0x70`.
-
-Directly recovered participating fields:
+Otherwise:
 
 ```text
-object + 0x04
-object + 0x18
-object + 0x80
+value  = 250 * sbi+0x1d0 + sbi+0x1a0
+global = *(u64 *)(Image + 0x16c6980)
+
+value >= global -> 0x366da4
+value < global  -> 0x366de4
 ```
 
-The arithmetic belongs to the same integer reciprocal family used elsewhere in the Transsion detector:
+This tail was previously missing from the documented function.
+
+## 7. Terminal path
+
+The terminal path begins at `0x366e7c`.
+
+Bit 7 of `sbi+0x4b9` controls only the TLS/list helpers:
 
 ```text
-0x51EB851F
-right shift 37
+bit7 set:
+    0x3e1014(stack_object)
+    0x34e224(sbi,1)
+    0x3e1558(stack_object)
 ```
 
-The exact source-level member names and threshold owner remain unresolved.
+Important correction: `0x34e224` receives the **SBI pointer**, not the stack object.
 
-## 6. Secondary policy ladder
-
-The function then executes two more selector checks:
+Then, unconditionally on the terminal path:
 
 ```text
-policy(sbi, 1)
-    false -> common early/skip path
-
-policy(sbi, 3)
-    false -> common early/skip path
+0x341250(sbi->sb,1)
+stat_info = *(sbi+0x568)
+stat_info+0x16c++
 ```
 
-When both pass, a dirty/reservation comparison is performed and another fixed-point guard is evaluated.
+Thus `0x341250` and the `+0x16c` statistic are not conditional on mount-byte bit7 once the terminal branch is entered.
 
-The main load chain is binary-derived:
+## 8. Helper classifications
+
+### `0x35cc18`
+
+Selector dispatch is directly established:
 
 ```text
-sbi + 0x80
-    -> object + 0x10
-    -> scalar + 0x64
-
-sbi + 0x70
-    -> object + 0x04
-    -> object + 0x18
-    -> object + 0x80
+0 -> 0x35cc7c
+1 -> 0x35ccc8
+2 -> 0x35cd14
+3 -> 0x35cd2c
+4 -> 0x35cd78
+5 -> 0x35cdb4
 ```
 
-The exact symbolic metric names are intentionally unresolved.
+The selector names remain anonymous.
 
-## 7. Time/current-value guard
+### `0x373108`
 
-A later block loads and combines:
+Tests `sbi+0x4b9` bit5 before entering a larger vendor threshold/accounting routine.
+
+### `0x3e1014`
+
+TLS-associated temporary object/list initialization helper.
+
+### `0x3e1558`
+
+TLS-associated temporary object/list reset helper.
+
+### `0x34e224`
+
+Global/list callback-dispatch helper invoked as `(sbi,1)`.
+
+### `0x341250`
+
+Terminal filesystem synchronization/balance-style helper invoked as `(sbi->sb,1)`. Exact original source name is not promoted.
+
+## 9. Controller mapping sanity check
+
+The independent wrapper bytes prove:
 
 ```text
-sbi + 0x1c8
-sbi + 0x198
-vendor global around Image + 0x16c6000 + 0xc14
+controller 0 -> gc_mode unchanged
+controller 1 -> temporary gc_mode 2
+controller 2 -> temporary gc_mode 3
 ```
 
-and performs a multiply/high-word fixed-point comparison.
-
-This is preserved as an anonymous policy predicate; it is not promoted to a battery/time/charge source-level name without stronger evidence.
-
-## 8. Terminal post-policy / balance path
-
-The terminal path is gated by:
+The vendor mode strings establish:
 
 ```text
-(sbi + 0x4b9) bit 7 == 1
+2 = URGENT
+3 = GREEDY
 ```
 
-When set, the binary invokes exactly:
+Therefore Stop-4/5's raw controller write of `2` causes the temporary **GREEDY** path.
+
+## 10. Final call graph
 
 ```text
-0x3e1014(stack-object)
-0x34e224(stack-object, 1)
-0x3e1558(stack-object)
-0x341250(sbi->sb, 1)
-```
-
-and then accesses:
-
-```text
-*(stat_info **)(sbi + 0x568)
-```
-
-followed by an increment at:
-
-```text
-stat_info + 0x16c
-```
-
-### What is proven
-
-```text
-bit7 gate -> four-call terminal chain -> stat +0x16c increment
-```
-
-### What is NOT proven
-
-The exact source identities of:
-
-```text
-0x3e1014
-0x34e224
-0x3e1558
-0x341250
-stat +0x16c
-```
-
-`0x341250` is therefore recorded as the **terminal filesystem balance/write-protection helper** rather than being renamed `f2fs_balance_fs_bg()` without binary proof.
-
-This distinction matters because the ordinary `f2fs_gc()` execution core is independently proven at `0x3503a8`.
-
-## 9. Vendor control descriptors
-
-### `need_switch_ssr`
-
-```text
-registration 0x37af88
-descriptor   Image +0x173b9d0
-backing      Image +0x1a139c0 (u8)
-```
-
-### `tran_urgent_gc`
-
-```text
-registration 0x37b068
-descriptor   Image +0x173bbb0
-backing      Image +0x1a139d0 (u32)
-```
-
-### `detect_charger_type`
-
-```text
-registration 0x37b184
-descriptor   Image +0x173bf70
-write handler symbol = detect_charger_type_write
-backing storage/consumer = unresolved
-```
-
-All three use the common registration framework:
-
-```text
-control name
-    -> Image +0x1a13a20 common runtime object
-    -> 0x274ea0
-    -> 0x274dac
-    -> per-control descriptor retained by generic registry node
-```
-
-They are not proven to be unique standalone function entry points.
-
-## 10. Controller-state correction
-
-This is now authoritative for the project:
-
-```text
-Image +0x1a13998 = controller
-
-controller 0 -> direct f2fs_gc(), mode unchanged
-controller 1 -> temporary sbi->gc_mode = 2
-controller 2 -> temporary sbi->gc_mode = 3
-```
-
-Therefore old notes that labeled controller value `2` as "urgent" are superseded.
-
-The actual stock detector stores `+0x998 = 2` for Stop 4/5, so those states must currently be described as **controller state 2 / resulting GREEDY override**, pending recovery of the original vendor symbolic label for the controller state itself.
-
-## 11. Final reconstructed call graph
-
-```text
-tran_gc_thread_func / detector
-        |
-        v
+tran_gc detector
+      |
+      v
 0x366cd4 vendor policy/orchestration
-        |
-        +-- sbi+0x48 bit3 guard
-        |
-        +-- policy(4) -> optional gate(0x80)
-        |
-        +-- policy(1) -> optional helper(455)
-        |
-        +-- policy(0)
-        |      +-- true  -> 0x362c40(sbi,0,0)
-        |      +-- false -> 0x363288(sbi,0xE38)
-        |
-        +-- gc_mode == 3 ?
-        |      +-- yes -> bypass seven-field non-mode-3 ladder
-        |      +-- no  -> all seven SBI guards must be zero
-        |
-        +-- fixed-point capacity guard
-        |
-        +-- policy(1)
-        +-- policy(3)
-        |
-        +-- dirty/reservation guard
-        +-- fixed-point guard
-        +-- time/current guard
-        |
-        +-- sbi+0x4b9 bit7 ?
-               |
-               +-- no  -> return
-               +-- yes -> 0x3e1014
-                        -> 0x34e224(...,1)
-                        -> 0x3e1558
-                        -> 0x341250(sb,1)
-                        -> stat +0x16c++
+      |
+      +-- entry freeze/state guard
+      +-- selector 4/1/0 helper ladder
+      +-- gc_mode == 3 ? --------------------+
+      |                                       |
+      | no                                    | yes
+      v                                       v
+ seven-field discriminator                0x366de4
+      |                                    shared stage
+      +-- active path 0x366da4
+      |       |
+      |       +-- fixed-point guard
+      |       +-- reservation guard
+      |       +-- secondary stage
+      |
+      +-- clean path 0x366ee0
+              |
+              +-- manager/list escalation -> 0x366da4
+              +-- time gate -> 0x366de4
+
+shared stage
+      |
+      +-- policy 1/3
+      +-- nested reservation comparison
+      +-- fixed-point/reservation gates
+      +-- time/current gate
+      +-- direct return OR terminal
+
+terminal
+      |
+      +-- optional TLS trio when mount bit7 set
+      +-- 0x341250(sbi->sb,1) always
+      +-- stat_info+0x16c++
 ```
 
-## 12. Remaining unresolved work
+## 11. Remaining uncertainty
 
-The `0x366cd4` control-flow reconstruction is now substantially complete. Remaining uncertainty is concentrated in symbolic source naming and opaque helper semantics:
+Still unresolved and intentionally not guessed:
 
 ```text
-seven SBI field source names
-selector 0/1/3/4 names
-0x373108 exact source identity
-0x35d22c exact source identity
-0x362c40 exact source identity/return semantics
-0x363288 exact source identity/return semantics
-0x3e1014 exact source identity
-0x34e224 exact source identity
-0x3e1558 exact source identity
-0x341250 exact source identity
+selector symbolic names
+0x35d22c original name
+0x362c40 original name
+0x363288 original name
+0x34e224 original name
+0x341250 original name
+seven guard-field source names
 stat_info +0x16c original member name
- detect_charger_type backing storage/consumer
 ```
 
-These are the remaining items that require another instruction-level producer/consumer pass rather than additional historical-source guessing.
+The branch topology and call arguments are now byte-checked against the fresh stock image.
