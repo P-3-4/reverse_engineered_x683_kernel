@@ -2,15 +2,21 @@
 
 Public F2FS history shows the GC prototype changed over time:
 
-- Older 4.14-era code includes a simpler `f2fs_gc(sbi, bool sync)` form.
-- Later code added background/force and victim-segment parameters.
-- A later 4.14/Android-era tree exposes `f2fs_gc(sbi, bool sync, bool background, bool force, unsigned int segno)`.
-- Newer kernels consolidated the arguments into `struct f2fs_gc_control`.
+- Older 4.14-era code includes simpler two/three-argument forms.
+- Later trees added background/force and victim-segment parameters.
+- Newer kernels consolidated GC arguments into `struct f2fs_gc_control`.
 
-The X683 stock reverse-engineering record reports a direct call equivalent to:
+The X683 stock binary is not to be identified from historical API chronology alone. Direct AArch64 disassembly of the stock entry at `0x3503a8` establishes the callable interface as:
 
-    f2fs_gc(sbi, sync, true)
+```c
+int f2fs_gc(struct f2fs_sb_info *sbi,
+            bool sync,
+            bool background,
+            unsigned int segno);
+```
 
-Therefore the X683 binary's callable ABI is not safely interchangeable with the currently inspected MT6768 reference tree. The reconstruction must select the exact vendor-era F2FS revision or add a local adapter after the stock call-site/register evidence is fully matched.
+Stock call sites pass either a real segment or `-1` (`NULL_SEGNO`), and the Transsion wrapper passes `-1`.
 
-The three-argument observation is treated as stock evidence; it is not being overwritten by the newer public prototype.
+Therefore the four-argument form is the current X683 ABI. Older three-argument statements in historical project documents are superseded and must not be used for source reconstruction.
+
+The exact vendor-era implementation behind this ABI still requires matching against the historical F2FS source revision and the remaining stock helper/call-site disassembly.
