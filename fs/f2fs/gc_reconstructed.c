@@ -3,9 +3,9 @@
  * Reconstructed/inferred code, not recovered proprietary source.
  * Target ABI: stock X683 f2fs_gc(sbi, sync, background, segno).
  *
- * The control-flow skeleton follows the X683 binary and the matching
- * four-argument Android/common 4.14-era lineage. This is not a claim of
- * proprietary-source recovery or byte equivalence.
+ * This source now tracks the binary-proven X683 control-flow skeleton and
+ * the matching Android/common 4.14-era four-argument GC implementation.
+ * It is still not proprietary-source recovery or byte-equivalent source.
  */
 #include "f2fs.h"
 #include "segment.h"
@@ -23,14 +23,6 @@ static int x683_get_victim(struct f2fs_sb_info *sbi,
 	return ret;
 }
 
-/*
- * Returns the number of foreground-freed segments in the victim section.
- * A complete section is therefore represented by
- *
- *     seg_freed == sbi->segs_per_sec
- *
- * and the caller converts that to sec_freed.
- */
 static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		unsigned int start_segno, struct gc_inode_list *gc_list,
 		int gc_type)
@@ -43,6 +35,7 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 		SUM_TYPE_DATA : SUM_TYPE_NODE;
 	int seg_freed = 0;
+	int submitted = 0;
 
 	if (sbi->segs_per_sec > 1)
 		f2fs_ra_meta_pages(sbi, GET_SUM_BLOCK(sbi, segno),
@@ -63,9 +56,11 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 
 		sum = page_address(sum_page);
 		if (type == SUM_TYPE_NODE)
-			gc_node_segment(sbi, sum->entries, segno, gc_type);
+			submitted += gc_node_segment(sbi, sum->entries,
+					segno, gc_type);
 		else
-			gc_data_segment(sbi, sum->entries, gc_list, segno, gc_type);
+			submitted += gc_data_segment(sbi, sum->entries,
+					gc_list, segno, gc_type);
 
 		stat_inc_seg_count(sbi, type, gc_type);
 		if (gc_type == FG_GC &&
@@ -75,7 +70,7 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		f2fs_put_page(sum_page, 0);
 	}
 
-	if (gc_type == FG_GC)
+	if (submitted)
 		f2fs_submit_merged_write(sbi,
 				(type == SUM_TYPE_NODE) ? NODE : DATA);
 
@@ -92,7 +87,12 @@ int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
 	unsigned int init_segno = requested_segno;
 	int gc_type = sync ? FG_GC : BG_GC;
 	int sec_freed = 0;
-	int ret = -EINVAL;
+	int total_freed = 0;
+	int ret = 0;
+	unsigned int skipped_round = 0;
+	unsigned int round = 0;
+	unsigned long long last_skipped;
+	unsigned long long first_skipped;
 	struct cp_control cpc;
 	struct gc_inode_list gc_list = {
 		.ilist = LIST_HEAD_INIT(gc_list.ilist),
@@ -100,10 +100,15 @@ int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
 	};
 
 	cpc.reason = __get_cp_reason(sbi);
+	last_skipped = sbi->skipped_atomic_files[FG_GC];
+	first_skipped = last_skipped;
+	sbi->skipped_gc_rwsem = 0;
 
 gc_more:
-	if (unlikely(!(sbi->sb->s_flags & MS_ACTIVE)))
+	if (unlikely(!(sbi->sb->s_flags & SB_ACTIVE))) {
+		ret = -EINVAL;
 		goto stop;
+	}
 
 	if (unlikely(f2fs_cp_error(sbi))) {
 		ret = -EIO;
@@ -111,7 +116,8 @@ gc_more:
 	}
 
 	if (gc_type == BG_GC && has_not_enough_free_secs(sbi, 0, 0)) {
-		if (prefree_segments(sbi)) {
+		if (prefree_segments(sbi) &&
+				!is_sbi_flag_set(sbi, SBI_CP_DISABLED)) {
 			ret = write_checkpoint(sbi, &cpc);
 			if (ret)
 				goto stop;
@@ -120,7 +126,6 @@ gc_more:
 			gc_type = FG_GC;
 	}
 
-	/* Critical-path balance calls must not perform BG GC. */
 	if (gc_type == BG_GC && !background) {
 		ret = -EINVAL;
 		goto stop;
@@ -136,33 +141,57 @@ gc_more:
 	{
 		int seg_freed = x683_do_garbage_collect(sbi, segno,
 				&gc_list, gc_type);
+
 		if (gc_type == FG_GC && seg_freed == sbi->segs_per_sec)
 			sec_freed++;
+		total_freed += seg_freed;
 	}
 
-	if (gc_type == FG_GC)
-		sbi->cur_victim_sec = NULL_SEGNO;
+	if (gc_type == FG_GC) {
+		unsigned long long current_skipped =
+			sbi->skipped_atomic_files[FG_GC];
 
-	if (!sync) {
-		if (has_not_enough_free_secs(sbi, sec_freed, 0)) {
+		if (current_skipped > last_skipped ||
+				sbi->skipped_gc_rwsem)
+			skipped_round++;
+		last_skipped = current_skipped;
+		round++;
+		sbi->cur_victim_sec = NULL_SEGNO;
+	}
+
+	if (sync)
+		goto stop;
+
+	if (has_not_enough_free_secs(sbi, sec_freed, 0)) {
+		if (skipped_round <= MAX_SKIP_GC_COUNT ||
+				skipped_round * 2 < round) {
 			segno = NULL_SEGNO;
 			goto gc_more;
 		}
 
-		if (gc_type == FG_GC)
+		if (first_skipped < last_skipped &&
+				(last_skipped - first_skipped) >
+				sbi->skipped_gc_rwsem) {
+			f2fs_drop_inmem_pages_all(sbi, true);
+			segno = NULL_SEGNO;
+			goto gc_more;
+		}
+
+		if (gc_type == FG_GC &&
+				!is_sbi_flag_set(sbi, SBI_CP_DISABLED))
 			ret = write_checkpoint(sbi, &cpc);
 	}
 
 stop:
-	/* X683 4-argument GC clears these SIT victim cursors before returning. */
 	SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
 	SIT_I(sbi)->last_victim[FLUSH_DEVICE] = init_segno;
 
-	/* Direct X683 epilogue at 0x352ba8 releases sbi->gc_mutex. */
 	mutex_unlock(&sbi->gc_mutex);
 	put_gc_inode(&gc_list);
 
-	if (sync)
+	if (sync && !ret)
 		ret = sec_freed ? 0 : -EAGAIN;
+
+	(void)total_freed;
 	return ret;
 }
