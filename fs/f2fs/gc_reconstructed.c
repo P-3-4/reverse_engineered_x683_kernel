@@ -3,8 +3,9 @@
  * Reconstructed/inferred code, not recovered proprietary source.
  * Target ABI: stock X683 f2fs_gc(sbi, sync, background, segno).
  *
- * Important ownership rule: historical 4.14 callers acquire gc_mutex before
- * calling f2fs_gc(); this function therefore does not unlock gc_mutex on exit.
+ * The control-flow skeleton follows the X683 binary and the matching
+ * four-argument Android/common 4.14-era lineage. This is not a claim of
+ * proprietary-source recovery or byte equivalence.
  */
 #include "f2fs.h"
 #include "segment.h"
@@ -22,6 +23,14 @@ static int x683_get_victim(struct f2fs_sb_info *sbi,
 	return ret;
 }
 
+/*
+ * Returns the number of foreground-freed segments in the victim section.
+ * A complete section is therefore represented by
+ *
+ *     seg_freed == sbi->segs_per_sec
+ *
+ * and the caller converts that to sec_freed.
+ */
 static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		unsigned int start_segno, struct gc_inode_list *gc_list,
 		int gc_type)
@@ -73,13 +82,14 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 	blk_finish_plug(&plug);
 	stat_inc_call_count(sbi->stat_info);
 
-	return (gc_type == FG_GC && seg_freed == sbi->segs_per_sec);
+	return seg_freed;
 }
 
 int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
 		unsigned int requested_segno)
 {
 	unsigned int segno = requested_segno;
+	unsigned int init_segno = requested_segno;
 	int gc_type = sync ? FG_GC : BG_GC;
 	int sec_freed = 0;
 	int ret = -EINVAL;
@@ -94,6 +104,7 @@ int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
 gc_more:
 	if (unlikely(!(sbi->sb->s_flags & MS_ACTIVE)))
 		goto stop;
+
 	if (unlikely(f2fs_cp_error(sbi))) {
 		ret = -EIO;
 		goto stop;
@@ -109,25 +120,44 @@ gc_more:
 			gc_type = FG_GC;
 	}
 
+	/* Critical-path balance calls must not perform BG GC. */
 	if (gc_type == BG_GC && !background)
 		goto stop;
-	if (segno == NULL_SEGNO && !x683_get_victim(sbi, &segno, gc_type))
-		goto stop;
 
-	if (x683_do_garbage_collect(sbi, segno, &gc_list, gc_type) &&
-			gc_type == FG_GC)
-		sec_freed++;
+	if (segno == NULL_SEGNO) {
+		if (!x683_get_victim(sbi, &segno, gc_type)) {
+			ret = -ENODATA;
+			goto stop;
+		}
+	}
+
+	{
+		int seg_freed = x683_do_garbage_collect(sbi, segno,
+				&gc_list, gc_type);
+		if (gc_type == FG_GC && seg_freed == sbi->segs_per_sec)
+			sec_freed++;
+	}
+
+	if (gc_type == FG_GC)
+		sbi->cur_victim_sec = NULL_SEGNO;
 
 	if (!sync) {
 		if (has_not_enough_free_secs(sbi, sec_freed, 0)) {
 			segno = NULL_SEGNO;
 			goto gc_more;
 		}
+
 		if (gc_type == FG_GC)
 			ret = write_checkpoint(sbi, &cpc);
 	}
 
 stop:
+	/* The explicit-segment ABI keeps the initial segment for cursor cleanup. */
+	if (SIT_I(sbi)) {
+		SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
+		SIT_I(sbi)->last_victim[FLUSH_DEVICE] = init_segno;
+	}
+
 	put_gc_inode(&gc_list);
 
 	if (sync)
