@@ -4,54 +4,147 @@ Date: 2026-08-18
 
 ## Verdict
 
-The reverse-engineering findings are substantially useful, but the previous `gc-five-pass-final.md` wording overstated completion. The repository contains a strong binary-derived reconstruction/scaffold, **not yet a buildable or byte-accurate replacement**.
+The repository now contains a substantially corrected binary-derived X683/H694 GC reconstruction. It is still **not build-proven or byte-accurate source replacement**.
 
-## Confirmed after re-check
+## Fresh binary verification
 
-- Boot SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`.
-- Decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`.
-- Stop-1/2/3 condition slots and Stop-4/5 result/controller writes remain the strongest recovered state-machine facts.
-- Controller 0/1/2 maps to normal / temporary `gc_mode` 2 / temporary `gc_mode` 3 in the wrapper reconstruction.
-- The historical F2FS `f2fs_gc(sbi, sync, background, segno)` ABI and caller-owned GC mutex model remain valid.
-- The three named vendor controls are proven registrations/descriptors; they are not proven standalone implementation symbols.
+The supplied stock `boot(8).img` was re-read directly and independently hashed:
 
-## Problems found and corrected
+- Boot SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
+- Boot size: `33,554,432` bytes
+- Kernel gzip offset: `0x800`
+- Decompressed Image size: `26,615,820` bytes
+- Decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
 
-### 1. Fake `msecs_to_jiffies()` arithmetic
+The fresh bytes match the repository's canonical binary hashes.
 
-`tran_gc_thread_reconstructed.c` previously contained `(timeout_ms + 3) >> 2` as a placeholder for `0xce58c`. That is not a valid general implementation of `msecs_to_jiffies()` and was removed. The reconstructed scheduler/wait path now explicitly leaves the kernel conversion/integration unresolved.
+## Corrections from this sanity pass
 
-### 2. Unproven dirty-counter sum
+### 1. `0x366cd4` boundary
 
-The thread scaffold previously summed six words at `dirty_info + 0x68`. The exact semantic mapping of that region was not strong enough to make this a source-level fact. The scaffold now accepts `recoverable_segments` explicitly instead of baking in the uncertain sum.
+Previous `0x366edc` termination was wrong.
 
-### 3. Thread reconstruction was overstated
+The function continues through:
 
-The thread source is a detector-step scaffold, not the complete proprietary kthread. The exact wait/re-entry/abort branches and vendor predicate producers are still unresolved.
+```text
+0x366ee0 .. 0x366f28
+```
 
-### 4. Wrapper/source integration is not build-proven
+with the canary failure call at `0x366f2c` and the next function beginning at `0x366f30`.
 
-The reconstructed files use vendor-divergent structure offsets and helper names. They have not been compiled against the exact X683 4.14 kernel headers/source tree. They must therefore not be treated as drop-in kernel source yet.
+### 2. Seven-field logic
 
-### 5. Historical delta is architectural, not exhaustive
+Previous wording said the seven SBI fields had to be all zero to permit the normal path. That was wrong.
 
-The stock/vendor separation is reliable at the architecture level, but the repository has not yet produced a complete line-by-line X683-vs-stock `gc.c` patch.
+Fresh machine code proves:
 
-## Remaining blockers
+```text
+any nonzero among:
+  +0x44c +0x450 +0x454 +0x448 +0x444 +0x45c +0x458
+    -> active path at 0x366da4
 
-1. Exact callback bodies/backing fields for `need_switch_ssr`, `tran_urgent_gc`, and `detect_charger_type`.
-2. `tran_gc_usb_wakelock` implementation path.
-3. Exact semantics of `0xcc774`, `+0x974`, and controller-object `+0x20`.
-4. Exact state-3 scheduler/wait/re-entry sequence.
-5. Exact mapping of the vendor `stat_info` members.
-6. Full exact stock-X683 `gc.c` differential.
-7. Compilation against the real X683/H694 4.14 source tree.
+all seven zero
+    -> alternate clean path at 0x366ee0
+```
 
-## Correct project status
+`gc_mode == 3` bypasses this discriminator and goes to the shared stage at `0x366de4`.
 
-- Binary understanding: high confidence for the recovered GC state machine and wrapper.
-- Source reconstruction: substantial scaffold, not final.
+### 3. Clean-path tail recovered
+
+`0x366ee0..0x366f28` is live policy code:
+
+```text
+sbi+0x80 object
+  -> child+0x2090 escalation test
+  -> list+0x24 escalation test
+  -> 250*sbi+0x1d0 + sbi+0x1a0
+  -> compare against Image+0x16c6980
+  -> either active path or shared stage
+```
+
+This path had previously been omitted from the function boundary.
+
+### 4. Terminal-call argument corrected
+
+Fresh bytes show:
+
+```text
+0x3e1014(stack_object)
+0x34e224(sbi,1)
+0x3e1558(stack_object)
+```
+
+`0x34e224` receives the SBI pointer, not the temporary stack object.
+
+### 5. Terminal-path conditionality corrected
+
+At `0x366e7c`, `sbi+0x4b9` bit 7 controls only the three TLS/list helpers.
+
+Once the terminal path is reached:
+
+```text
+0x341250(sbi->sb,1)
+stat_info+0x16c++
+```
+
+execute unconditionally.
+
+### 6. Shared policy global corrected
+
+The ADRP/LDR sequence resolves to:
+
+```text
+Image + 0x16c6980
+```
+
+not the previously documented `Image + 0x16c6000 + 0xc14` approximation.
+
+### 7. Controller mapping revalidated
+
+Fresh wrapper disassembly confirms:
+
+```text
+controller 0 -> mode unchanged
+controller 1 -> temporary gc_mode = 2
+controller 2 -> temporary gc_mode = 3
+```
+
+Therefore Stop-4/5's controller value `2` produces the temporary `GREEDY` (`gc_mode=3`) path.
+
+## Other sanity checks
+
+`0x35cc18` selector dispatch is directly confirmed for values `0..5`:
+
+```text
+0 -> 0x35cc7c
+1 -> 0x35ccc8
+2 -> 0x35cd14
+3 -> 0x35cd2c
+4 -> 0x35cd78
+5 -> 0x35cdb4
+```
+
+`0x373108` remains a real vendor threshold/accounting helper after an initial `sbi+0x4b9` bit5 gate.
+
+`0x3e1014` and `0x3e1558` form a paired TLS temporary-object lifecycle.
+
+`0x341250` is retained as an anonymous terminal filesystem synchronization/balance-style helper; its original source symbol is not promoted from call shape alone.
+
+## Current authoritative artifacts
+
+- `docs/reverse-engineering/x683-366cd4-byte-sanity-pass.md`
+- `docs/reverse-engineering/bootimg-366cd4-byte-sanity.hex`
+- `fs/f2fs/tran_gc_policy_reconstructed.c`
+- `docs/reverse-engineering/x683-366cd4-vendor-policy-final.md`
+- `docs/reverse-engineering/vendor-control-final-status.md`
+
+## Current honest status
+
+- Binary hashes: verified against fresh uploaded image.
+- `tran_f2fs_gc` controller mapping: high confidence.
+- X683 `0x3503a8` four-argument GC boundary: high confidence.
+- `0x366cd4` branch topology: now byte-checked through its full live tail.
+- Vendor helper symbolic names: incomplete.
+- Exact X683-vs-stock `gc_node_segment()/gc_data_segment()` delta: incomplete.
 - Buildability: **not established**.
 - Replacement-kernel readiness: **not established**.
-
-This document supersedes any wording that calls the five-pass reconstruction "complete" without these qualifications.
