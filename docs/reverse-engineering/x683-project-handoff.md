@@ -23,44 +23,30 @@ Repository: `P-3-4/reverse_engineered_x683_kernel`
 
 Canonical branch: `main`.
 
-There are many historical/intermediate branches. Do not continue development from them or merge them blindly. They are historical work products. Continue from `main` and preserve only evidence-backed corrections.
+Continue from `main` and preserve only evidence-backed corrections.
 
 ## 4. Stock boot image identity
 
-The source boot image used for the direct binary analysis is:
+The uploaded stock boot image is now directly verified in this chat:
 
 - Size: 33,554,432 bytes (32 MiB)
 - SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
 - Android magic: `ANDROID!`
 - Board: `CY-X683-H694-E`
 - Page size: 2048 / `0x800`
-- Kernel load address: `0x40080000`
-- Image text offset: `0x80000`
+- Kernel compressed size: `0x94dad4` = 9,755,348 bytes
+- Decompressed ARM64 Image: 26,615,820 bytes
+- Decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
 
-The complete `boot.img` is not stored in the repository because of GitHub's file-size/upload limitations. Its identity and the relevant extracted evidence are permanently recorded.
+The gzip stream has 114,696 trailing bytes after the gzip member, so decompression must stop at gzip EOF.
 
-## 5. Kernel artifact — CURRENT VERIFIED STATUS
+## 5. Repository kernel artifact
 
-The repository path `artifacts/kernel/x683_kernel_compressed.gz` currently **does not contain the claimed kernel binary**. Its latest adding commit (`6176593e36026ac739d5f7890ea723132e9c13a0`) is explicitly titled `Add x683_kernel_compressed.gz placeholder file` and its actual diff is a single text line:
-
-`placeholder`
-
-The current GitHub Contents API reports blob SHA `2aad2f928a7af962831bc0d5cb33df94adf254c0`, but this is a Git blob SHA and does not validate the previously claimed 9,640,652-byte gzip payload. The raw-file fetch also cannot retrieve a gzip payload from this path because the stored object is not the expected binary.
-
-Therefore the previously recorded values below are **historical extraction evidence, not currently verified repository contents**:
-
-- claimed compressed member: 9,640,652 bytes
-- claimed compressed SHA-256: `6ddfd017d9ee7152a856f46657f9ddd5287adf69d49cb853f7e747c2b7c18dfd`
-- claimed decompressed ARM64 Image: 26,615,820 bytes
-- claimed decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
-
-A separate permanent artifact document records a different kernel-slot size of `0x94dad4` = 9,755,348 bytes. This contradiction remains unresolved.
-
-**Do not perform further absolute-offset validation against `artifacts/kernel/x683_kernel_compressed.gz` until the actual binary is uploaded/recovered and its SHA-256 is verified.**
+`artifacts/kernel/x683_kernel_compressed.gz` is present on `main` and GitHub reports its blob size as 9,640,652 bytes. The boot.img supplied in this chat independently verifies the 9,755,348-byte kernel slot and the 26,615,820-byte decompressed Image above. Treat the freshly uploaded boot.img as the direct binary authority for offset work.
 
 ## 6. Permanent binary evidence
 
-Relevant evidence is already committed as text/hex/disassembly:
+Relevant evidence:
 
 - `docs/reverse-engineering/bootimg-analysis-manifest.md`
 - `docs/reverse-engineering/bootimg-artifact-index.md`
@@ -70,14 +56,17 @@ Relevant evidence is already committed as text/hex/disassembly:
 - `docs/reverse-engineering/transsion-gc-stop-conditions-disassembly.md`
 - `docs/reverse-engineering/gc-abi-correction.md`
 - `docs/reverse-engineering/gc-mode-state-machine-deep-pass.md`
+- `docs/reverse-engineering/tran-gc-detector-arming-deep-pass.md`
 - `docs/reverse-engineering/f2fs-layout.md`
 - `fs/f2fs/gc_reconstructed.c`
+- `fs/f2fs/tran_gc_reconstructed.c`
+- `fs/f2fs/tran_gc_thread_reconstructed.c`
 
-Use the direct binary artifacts as higher authority than earlier prose that has since been corrected.
+Use direct binary artifacts and the supplied boot.img above prose that has since been corrected.
 
 ## 7. Critical kernel offsets
 
-All following code offsets are offsets in the decompressed AArch64 kernel Image unless explicitly stated otherwise:
+Offsets below are decompressed-kernel offsets:
 
 - `0x3503a8`: stock `f2fs_gc` entry point
 - `0x345d58`: `sbi + 0x534` read
@@ -91,6 +80,8 @@ All following code offsets are offsets in the decompressed AArch64 kernel Image 
 - `0x37515c`: standard idle `gc_mode` writer (1/2)
 - `0x375168`: normal `gc_mode = 0`
 - `0x376f84`: `tran_gc_thread_func` related literal/reference
+- `0x377120..0x377494`: detector arming/runtime state transitions
+- `0x377494`: explicit detector state transition to `+0x9d4 = 3`
 - `0x377700..0x3779b0`: Stop Conditions 1–5
 - `0x37ada8`: Transsion `tran_f2fs_gc` wrapper
 - `0x37adc4`: Transsion controller read at `+0x998`
@@ -106,7 +97,7 @@ Important literals include `tran_f2fs_gc`, `gc mode is COST`, `gc mode is URGENT
 
 ## 8. Critical f2fs_sb_info layout
 
-High-confidence recovered offsets:
+High-confidence offsets:
 
 | Offset | Identification | Confidence |
 |---:|---|---|
@@ -121,20 +112,22 @@ High-confidence recovered offsets:
 | `0x4b8` | `mount_opt.opt` | High |
 | `0x534` | `gc_mode` | High / directly supported by binary accesses
 
-The segment-manager correlations are:
+Segment-manager correlations:
 
 - `sm_info + 0x00` = `sit_info`
 - `sm_info + 0x08` = `free_info`
 - `sm_info + 0x10` = `dirty_info`
+- `sm_info + 0x5c` = `main_segments`
 - `sm_info + 0x60` = `reserved_segments`
 
-The Transsion GC code reaches free-segment accounting through `sbi -> sm_info -> free_info`; dirty victim selection reaches `dirty_info`.
+Relevant dirty-manager offsets used by the detector:
 
-## 9. IMPORTANT ABI CORRECTION — CURRENT AUTHORITY
+- `dirty_info + 0x68..0x7c`: six consecutive per-type dirty counters
+- `dirty_info + 0x84`: prefree/recoverable counter used by detector
 
-The stock X683 binary **does not use the old 3-argument `f2fs_gc(sbi, sync, background)` prototype** and does not use the later 5-argument force form.
+## 9. ABI authority
 
-Direct disassembly proves the stock entry point at `0x3503a8` uses:
+Stock X683 uses:
 
 ```c
 int f2fs_gc(struct f2fs_sb_info *sbi,
@@ -143,23 +136,15 @@ int f2fs_gc(struct f2fs_sb_info *sbi,
             unsigned int segno);
 ```
 
-Evidence: the function saves `w2`, `w3`, and `w1`; later it takes/reads the saved fourth argument. Call sites also set `w3` to either a real segment or `-1`.
+Transsion wrapper uses `segno = -1` (`NULL_SEGNO`).
 
-The Transsion wrapper passes:
+All future X683 reconstruction must use the four-argument ABI.
 
-```c
-f2fs_gc(sbi, sync, true, -1);
-```
-
-where `-1` is `NULL_SEGNO`.
-
-Therefore every future X683 source reconstruction must use the four-argument ABI unless new direct evidence disproves it.
-
-## 10. gc_mode state/policy
+## 10. gc_mode policy
 
 `sbi + 0x534` is `gc_mode`.
 
-The historically compatible four-state family is:
+Compatible policy family:
 
 ```c
 GC_NORMAL      = 0
@@ -168,257 +153,203 @@ GC_IDLE_GREEDY = 2
 GC_URGENT      = 3
 ```
 
-Policy selection:
+Vendor wrapper:
 
-- normal BG GC -> cost-benefit
-- normal FG GC -> greedy
-- IDLE_CB -> cost-benefit
-- IDLE_GREEDY -> greedy
-- URGENT -> greedy
+```text
+controller 0 -> normal f2fs_gc
+controller 1 -> temporary gc_mode 2 / GREEDY / restore
+controller 2 -> temporary gc_mode 3 / URGENT / restore
+```
 
-`gc_mode` is separate from `mount_opt.opt` at `sbi + 0x4b8`.
+## 11. Transsion controller state
 
-Direct stock writers/overrides exist. The Transsion wrapper temporarily overrides `gc_mode` around `f2fs_gc()` and explicitly restores the old value.
-
-Do not invent a charging/USB/display event that directly writes `gc_mode` unless a stock store to `sbi+0x534` proves it. The vendor trigger path primarily acts through its own controller.
-
-## 11. Transsion GC controller
-
-The vendor GC subsystem has a controller/global state around `+0x990..+0xa0c`.
-
-Evidence-based semantic map:
+Known semantic fields:
 
 - `+0x990`: 64-bit invocation/cycle counter
-- `+0x998`: 32-bit Transsion GC controller state; `0/1/2` select normal/GREEDY/URGENT wrapper behavior
-- `+0x9c0`: byte guard that can block controller writes
+- `+0x998`: controller: 0 normal / 1 greedy / 2 urgent
+- `+0x9c0`: controller-write guard
 - `+0x9d0`: loop/termination state
-- `+0x9d4`: detector state; observed values 1–4
+- `+0x9d4`: detector state; stock writes include 2 and 3
 - `+0x9d8`: repeated-detector counter
 - `+0x9e0`: detector-cycle counter
 - `+0x9f0`: running maximum/statistic
-- `+0x9f4`: saved baseline/statistic
-- `+0x9f8`: stop-result flag; observed 0/1/2
-- `+0x9fc`: stop-condition code; observed 1/2/3
-- `+0xa04`: cadence selector; zero -> 50, nonzero -> 500
-- `+0xa05`: loop state
-- `+0xa06`: detector enable/continue flag
-- `+0xa08`: signed baseline segment value
-- `+0xa0c`: baseline written-segment value
+- `+0x9f4`: saved recoverable-segment baseline
+- `+0x9f8`: stop result, 1/2 for Stops 4/5
+- `+0x9fc`: stop condition, 1/2/3 for Stops 1/2/3
+- `+0xa00`: detector mode/state gate
+- `+0xa04`: cadence selector, 0 -> 50 / nonzero -> 500
+- `+0xa05`: loop-active/state byte
+- `+0xa06`: detector-active/continue byte
+- `+0xa08`: signed segment baseline
+- `+0xa0c`: written/recoverable baseline
 
-These are semantic labels inferred from instruction use, not claimed vendor source field names.
+## 12. Detector arming: current exact reconstruction
 
-## 12. Transsion wrapper behavior
+At `0x377120..0x377494`, the static detector first increments a global cycle/statistic and maintains `+0x9f0` from a vendor object field.
 
-At `0x37ada8`, `tran_f2fs_gc` reads the controller at `+0x998`.
+The initial F2FS-derived quantities are:
 
-Observed policy behavior:
+```c
+sm        = SM_I(sbi);
+sit       = sm->sit_info;
+free_i    = sm->free_info;
+dirty_i   = sm->dirty_info;
 
-```text
-controller 0:
-    normal f2fs_gc()
-
-controller 1:
-    temporarily gc_mode = 2 (GREEDY)
-    f2fs_gc(..., -1)
-    restore old gc_mode
-
-controller 2:
-    temporarily gc_mode = 3 (URGENT)
-    f2fs_gc(..., -1)
-    restore old gc_mode
+recoverable = sum(dirty_i counters at 0x68..0x7c);
+user_segments = sbi->user_block_count >> sbi->log_blocks_per_seg;
 ```
 
-The wrapper has adjacent policy strings for COST, URGENT and GREEDY.
+A preliminary ratio is computed from main/free/SIT/user quantities and divided by the recoverable-plus-free denominator. The result is held in `w21` and must reach at least `0x15f` for the static arming path to continue.
 
-## 13. Stop Conditions 1–5
+The detector then checks:
+
+1. recoverable dirty state is large enough relative to `user_segments`;
+2. the computed ratio `w21 >= 351`;
+3. free-segment capacity passes a main-segment-derived threshold;
+4. `(user_block_count - sit_blocks)` exceeds a ~2.5% scaled threshold based on `13 * user_block_count`;
+5. `sbi + 0x3f0` exceeds a ~2.5% scaled threshold based on `27 * sit_blocks`.
+
+If all pass:
+
+```text
++0xa00 = 1
++0xa04 = 1
+```
+
+Otherwise:
+
+```text
++0xa00 = 2
+```
+
+The common continuation then sets:
+
+```text
++0x9d4 = 2
++0xa06 = 1
+```
+
+This is now a proven state transition, not a guessed statistic.
+
+## 13. Detector state 3 transition
+
+At `0x377494` the stock image explicitly performs:
+
+```text
++0x9d4 = 3
+vendor-state +0x158 = 1
+```
+
+Two helper calls follow. Their exact semantic names remain unresolved.
+
+Subsequent runtime guards check superblock state, filesystem counters, nested objects under `sm_info + 0x80`, vendor state `+0x974`, and vendor/reference state at `+0xa10`.
+
+## 14. Stop Conditions
 
 ### Stop 1
 
-At `0x377720/0x377724`, a signed `b.gt` compares the calculated `delta_seg` (`w25`) against a threshold. The threshold is derived from a table-selected value and `w21`, then scaled using `0x51EB851F >> 37`, approximately 2.5%.
+```c
+recoverable = free_segments + prefree/recoverable_dirty;
+delta1 = recoverable - controller->saved_baseline;
 
-If true:
+bucket = max(global[0x890], global[0x894]);
+if (bucket <= 7)
+    factor = table[0..7] = {100,100,100,80,80,80,60,60};
 
-```text
-log Stop condition 1
-controller +0x9fc = 1
+threshold1 = factor * selected_scale * 0x51EB851F >> 37;
 ```
+
+Predicate:
+
+```c
+delta1 > threshold1
+```
+
+→ `+0x9fc = 1`.
 
 ### Stop 2
 
-At `0x37776c/0x377770`, a signed `b.gt` compares a second calculated delta with a table-derived threshold.
-
-If true:
-
-```text
-log Stop condition 2
-controller +0x9fc = 2
+```c
+delta2 = recoverable - reserved_segments;
+threshold2 = factor * threshold_base * 0x51EB851F >> 37;
 ```
+
+Predicate:
+
+```c
+delta2 > threshold2
+```
+
+→ `+0x9fc = 2`.
 
 ### Stop 3
 
-At `0x3777c8/0x3777cc` (with surrounding instructions through `0x3777d0`), a signed comparison tests a 64-bit scaled movement/cost quantity against a signed segment/reference quantity.
-
-If true:
-
-```text
-log Stop condition 3
-controller +0x9fc = 3
+```c
+span = user_segments - sit_segments;
+scaled = signed_fixed_point(table2[bucket] * span);
+reference = recoverable - reserved_segments;
 ```
 
-### Stop 4 — SSR trigger
+`table2 = {80,80,80,70,70,70,60,60}` and stock uses the signed multiply-high constant `0xA3D70A3D70A3D70B` followed by the observed shift/correction sequence.
 
-At approximately `0x3777e8..0x37782c`, the calculated segment/write delta is compared against a vendor threshold.
+Predicate:
 
-If the Stop-4 predicate succeeds:
-
-1. log:
-   `match: Stop condition 4, dec_seg=%d, inc_written_seg=%d, switch to SSR`
-2. test controller `+0x9c0`
-3. if not blocked, write `2` to controller `+0x998`
-4. write `1` to `+0x9f8`
-
-This is direct binary proof that Stop 4 is an SSR-switch trigger.
-
-### Stop 5 — periodic no-progress trigger
-
-At `0x377830..0x377878`, `+0xa04` selects cadence:
-
-- zero -> 50
-- nonzero -> 500
-
-The code computes `+0x990 % cadence`. At the selected periodic point it compares current segment/write progress against `+0xa08` / `+0xa0c` baselines.
-
-If insufficient/no free-segment progress is detected, the path writes controller `2` and sets `+0x9f8 = 2`, with literal:
-
-`match: Stop condition 5,every 400 times gc none free segment inc`
-
-The literal says 400 while compiled cadence selection is 50/500. Preserve this discrepancy rather than normalizing it.
-
-## 14. SSR decision path
-
-Current binary-supported path:
-
-```text
-segment/write delta exceeds vendor threshold
-        -> Stop Condition 4
-        -> controller +0x998 = 2 (unless +0x9c0 blocks write)
-        -> +0x9f8 = 1
-        -> Transsion GC wrapper sees controller 2
-        -> temporary sbi+0x534 = 3 (URGENT)
-        -> f2fs_gc(sbi, sync, true, -1)
-        -> restore previous gc_mode
+```c
+scaled < reference
 ```
 
-Stop 5 is a separate periodic no-progress trigger that also drives controller 2 and records stop result 2.
+→ `+0x9fc = 3`.
 
-## 15. Victim-selection reconstruction
+### Stop 4
 
-The intended stock-compatible path is:
+Direct stock result:
 
 ```text
-f2fs_gc
-  -> select GC type / policy
-  -> __get_victim
-  -> SIT/dirty manager locking
-  -> DIRTY_I(sbi)->v_ops->get_victim(...)
-  -> victim policy (cost-benefit / greedy)
-  -> last_victim cursor
+condition succeeds
+-> controller +0x998 = 2 unless +0x9c0 blocks
+-> +0x9f8 = 1
 ```
 
-The 4.14-era locking correction is important: use `mutex_lock(&sentry_lock)` for the older lineage rather than importing the later 4.15 rwsem form blindly.
+Log explicitly says switch to SSR.
 
-The victim cost correction is also important: greedy selection gives data segments a doubled cost relative to node segments in the historical implementation. Do not use a raw `valid_blocks` cost for all segment types.
+### Stop 5
 
-## 16. Garbage-collection helper reconstruction
+```c
+interval = +0xa04 ? 500 : 50;
+if (cycle % interval == 0) {
+    progress = current_sit_component +
+               (current_recoverable - baseline_recoverable);
+    if (progress <= baseline_segment) {
+        controller = 2;
+        +0x9f8 = 2;
+    }
+}
+```
 
-The reconstructed `do_garbage_collect` work includes the historical sequence:
+## 15. Current source status
 
-- summary-page acquisition/read-ahead
-- summary footer/type dispatch
-- node/data segment migration
-- statistics
-- foreground merged-write submission
-- complete-section accounting
-
-`fs/f2fs/gc_reconstructed.c` has now been corrected to expose the four-argument X683 ABI. It remains reconstructed/inferred code and is not yet a verified stock-equivalent implementation.
-
-## 17. Current source status
-
-Repository contains reconstructed/inferred F2FS GC source and documentation. It is not yet a verified stock-equivalent build.
-
-Main source areas:
+Main reconstructed sources:
 
 - `fs/f2fs/gc_reconstructed.c`
-- `fs/f2fs/...` reconstructed F2FS pieces
-- `reconstructed/` source fragments
-- `docs/reverse-engineering/` evidence and analysis
+- `fs/f2fs/tran_gc_reconstructed.c`
+- `fs/f2fs/tran_gc_thread_reconstructed.c`
+- `fs/f2fs/victim_reconstructed.c`
 
-Do not replace evidence-backed offset correlations with guessed struct members until the stock binary proves the correspondence.
+The code remains reconstructed/inferred and is not yet a verified stock-equivalent build.
 
-## 18. What has been corrected during the project
+## 16. Next reverse-engineering target
 
-1. Do not confuse `sbi+0x4b8` (`mount_opt.opt`) with `sbi+0x534` (`gc_mode`).
-2. Do not use `gc_thread->gc_idle` as the X683 GC policy field.
-3. Use the 4.14-era mutex `sentry_lock` where appropriate; later rwsem code is a revision mismatch.
-4. Greedy victim cost must account for data-vs-node weighting.
-5. Stop 4 is a real SSR-switch path, not just a logging branch.
-6. Transsion controller value 2 feeds the vendor wrapper's URGENT override.
-7. The stock X683 GC ABI is four arguments; this supersedes earlier three-argument notes.
-8. Exact vendor triggers must not be invented from strings alone.
-9. The committed kernel path is currently a placeholder, not a verified gzip binary; do not use its Git blob SHA as a payload SHA-256.
+The next target is the runtime path following detector state 3:
 
-## 19. Known contradictions / sanity checks required
+```text
+0x377494 onward
+-> helper at 0xce58c
+-> helper at 0x57554
+-> +0x974 guard
+-> nested sm_info +0x80 objects
+-> helper 0xe0693c
+-> helper 0x1eca60
+-> transition into static Stop-1..5 evaluation
+```
 
-### Kernel artifact contradiction — BLOCKING
-
-The repository currently stores `artifacts/kernel/x683_kernel_compressed.gz` as a one-line text placeholder, despite older project notes describing a 9,640,652-byte gzip. A separate evidence document identifies the kernel slot as `0x94dad4` = 9,755,348 bytes.
-
-The previously claimed compressed SHA `6ddfd...` and decompressed Image SHA `965138...` therefore cannot currently be reverified from `main`.
-
-**Required action:** recover/upload the actual compressed kernel binary to the repository (or another accessible project artifact), then verify its SHA-256 and decompressed Image SHA before doing further absolute-offset validation.
-
-### Older ABI documents
-
-`gc-reconstruction.md`, `f2fs-api-history.md`, and the header comment in `gc_reconstructed.c` previously contained the obsolete three-argument assumption. These have now been corrected to the direct four-argument X683 ABI.
-
-## 20. Immediate next work
-
-1. **Recover the actual compressed kernel binary**; the current repository object is only `placeholder`.
-2. Verify the recovered gzip SHA-256 and decompressed Image SHA against the historical claims.
-3. Resolve the 9,640,652 vs 9,755,348 kernel-slot discrepancy against the exact boot-image SHA.
-4. Re-disassemble `0x3503a8`, `0x37ada8`, and `0x377700..0x3779b0` from the canonical Image.
-5. Audit `fs/f2fs/gc_reconstructed.c` for remaining semantic/compile mismatches beyond the corrected ABI.
-6. Reconstruct the exact `tran_gc_thread_func` around the controller fields.
-7. Resolve the remaining vendor helper/threshold routine at `0x37b5d4`.
-8. Trace charging, USB, framebuffer, wakelock, fragmentation, `tran_urgent_gc`, `need_switch_ssr`, and `detect_charger_type` callers to establish actual vendor triggers.
-9. Match the vendor code against the exact historical F2FS revision before claiming source equivalence.
-10. Reconstruct `__get_victim`, cost-benefit/greedy selection, `last_victim[]`, and dirty-segment operations against the stock binary.
-11. Only after these are consistent, integrate reconstructed C and begin compile/boot validation.
-
-## 21. Method / evidence standard
-
-Use this confidence hierarchy:
-
-1. Direct stock AArch64 instruction behavior.
-2. Direct stock strings/literal cross-reference combined with control flow.
-3. Recovered struct offsets from multiple independent accesses.
-4. Historical public F2FS source matching the binary's revision neighborhood.
-5. Inference only when clearly labelled.
-
-Never promote an inference to a fact just because an upstream version looks similar.
-
-## 22. New-chat continuation instruction
-
-Start the next chat by reading this file and the following documents before doing new analysis:
-
-- `docs/reverse-engineering/x683-project-handoff.md` (this file)
-- `docs/reverse-engineering/bootimg-gc-artifacts.md`
-- `docs/reverse-engineering/bootimg-gc-mode-evidence.md`
-- `docs/reverse-engineering/transsion-gc-stop-conditions-disassembly.md`
-- `docs/reverse-engineering/gc-abi-correction.md`
-- `docs/reverse-engineering/f2fs-layout.md`
-- `docs/reverse-engineering/gc-mode-state-machine-deep-pass.md`
-- `docs/reverse-engineering/bootimg-gc-key-hex.txt`
-- `fs/f2fs/gc_reconstructed.c`
-
-Then recover the actual kernel artifact and perform the kernel-artifact/hash sanity check before continuing the reverse engineering.
+Highest priority is resolving the helper call targets and determining whether they correspond to `detect_charger_type`, `need_switch_ssr`, `tran_urgent_gc`, wakelock checks, or filesystem write-state checks.
