@@ -2,132 +2,36 @@
 
 This is the canonical continuation document for moving the project to a new chat. Work from `main` and treat this document plus the referenced evidence artifacts as the current project state.
 
-## 1. Objective
+## Current state
 
-Reverse-engineer the stock Infinix X683 / H694 MT6768 kernel and reconstruct a functionally equivalent, buildable kernel/source tree. Initial target is the stock-equivalent Linux 4.14.141-era kernel and Android 10 userspace compatibility. Do not modernize until stock-equivalent behavior is established.
+The supplied stock `boot.img` has been directly verified and is now the authority for all absolute-offset work:
 
-Recovered code must be labelled reconstructed/inferred and must not be represented as proprietary Transsion source.
-
-## 2. Device / kernel target
-
-- Device: Infinix X683 / H694
-- SoC: MediaTek MT6768
-- Kernel lineage: Linux 4.14.141+
-- Architecture: ARM64 / AArch64
-- Stock kernel is a vendor/Transsion 4.14-derived tree with later/backported F2FS changes.
-- Stock boot board string: `CY-X683-H694-E`.
-
-## 3. Canonical branch / repository
-
-Repository: `P-3-4/reverse_engineered_x683_kernel`
-
-Canonical branch: `main`.
-
-Continue from `main` and preserve only evidence-backed corrections.
-
-## 4. Stock boot image identity
-
-The uploaded stock boot image is now directly verified in this chat:
-
-- Size: 33,554,432 bytes (32 MiB)
 - SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
-- Android magic: `ANDROID!`
-- Board: `CY-X683-H694-E`
-- Page size: 2048 / `0x800`
-- Kernel compressed size: `0x94dad4` = 9,755,348 bytes
-- Decompressed ARM64 Image: 26,615,820 bytes
-- Decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
+- size: 33,554,432 bytes
+- kernel slot: `0x94dad4` = 9,755,348 bytes
+- decompressed Image: 26,615,820 bytes
+- decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
+- gzip trailing bytes after member: 114,696
 
-The gzip stream has 114,696 trailing bytes after the gzip member, so decompression must stop at gzip EOF.
+The project targets the Infinix X683/H694 MT6768 stock-equivalent 4.14.141-era kernel. Recovered code is reconstructed/inferred, not proprietary-source recovery.
 
-## 5. Repository kernel artifact
+## Canonical repository
 
-`artifacts/kernel/x683_kernel_compressed.gz` is present on `main` and GitHub reports its blob size as 9,640,652 bytes. The boot.img supplied in this chat independently verifies the 9,755,348-byte kernel slot and the 26,615,820-byte decompressed Image above. Treat the freshly uploaded boot.img as the direct binary authority for offset work.
+`P-3-4/reverse_engineered_x683_kernel`, branch `main`.
 
-## 6. Permanent binary evidence
+## Critical F2FS facts
 
-Relevant evidence:
-
-- `docs/reverse-engineering/bootimg-analysis-manifest.md`
-- `docs/reverse-engineering/bootimg-artifact-index.md`
-- `docs/reverse-engineering/bootimg-gc-artifacts.md`
-- `docs/reverse-engineering/bootimg-gc-key-hex.txt`
-- `docs/reverse-engineering/bootimg-gc-mode-evidence.md`
-- `docs/reverse-engineering/transsion-gc-stop-conditions-disassembly.md`
-- `docs/reverse-engineering/gc-abi-correction.md`
-- `docs/reverse-engineering/gc-mode-state-machine-deep-pass.md`
-- `docs/reverse-engineering/tran-gc-detector-arming-deep-pass.md`
-- `docs/reverse-engineering/f2fs-layout.md`
-- `fs/f2fs/gc_reconstructed.c`
-- `fs/f2fs/tran_gc_reconstructed.c`
-- `fs/f2fs/tran_gc_thread_reconstructed.c`
-
-Use direct binary artifacts and the supplied boot.img above prose that has since been corrected.
-
-## 7. Critical kernel offsets
-
-Offsets below are decompressed-kernel offsets:
-
-- `0x3503a8`: stock `f2fs_gc` entry point
-- `0x345d58`: `sbi + 0x534` read
-- `0x345d6c`: temporary `gc_mode = 3`
-- `0x345d78`: restore `gc_mode`
-- `0x352f10`: `gc_mode` read in GC/victim path
-- `0x352f58`: another `gc_mode` read
-- `0x365918`: `gc_mode` read in GC logic
-- `0x374d4c`: F2FS sysfs handler region
-- `0x3750f4`: standard urgent `gc_mode = 3` writer
-- `0x37515c`: standard idle `gc_mode` writer (1/2)
-- `0x375168`: normal `gc_mode = 0`
-- `0x376f84`: `tran_gc_thread_func` related literal/reference
-- `0x377120..0x377494`: detector arming/runtime state transitions
-- `0x377494`: explicit detector state transition to `+0x9d4 = 3`
-- `0x377700..0x3779b0`: Stop Conditions 1–5
-- `0x37ada8`: Transsion `tran_f2fs_gc` wrapper
-- `0x37adc4`: Transsion controller read at `+0x998`
-- `0x37adfc`: vendor temporary `gc_mode = 3`
-- `0x37ae00`: vendor call to `f2fs_gc`
-- `0x37ae04`: restore previous mode
-- `0x37ae68`: vendor temporary `gc_mode = 2`
-- `0x37ae6c`: vendor call to `f2fs_gc`
-- `0x37ae7c`: restore previous mode
-- `0x37b5d4..0x37b8c0`: GC threshold/helper routine
-
-Important literals include `tran_f2fs_gc`, `gc mode is COST`, `gc mode is URGENT`, `gc mode is GREEDY`, `tran_gc_usb_wakelock`, `tran_gc_thread_func create`, `tran_gc loop static detect`, `kernel or os is holding wakelock!`, `f2fs is writing data`, `tran_urgent_gc`, `need_switch_ssr`, `detect_charger_type`, and the Stop-4 SSR string.
-
-## 8. Critical f2fs_sb_info layout
-
-High-confidence offsets:
-
-| Offset | Identification | Confidence |
-|---:|---|---|
-| `0x3d8` | `log_blocks_per_seg` | High |
-| `0x3dc` | `blocks_per_seg` | High |
-| `0x3e0` | `segs_per_sec` | High |
-| `0x408` | `user_block_count` | High |
-| `0x428` | `reserved_blocks` | High |
-| `0x430` | `current_reserved_blocks` | High |
-| `0x438` | `unusable_block_count` | High |
-| `0x440` | `nquota_files` | High |
-| `0x4b8` | `mount_opt.opt` | High |
-| `0x534` | `gc_mode` | High / directly supported by binary accesses
-
-Segment-manager correlations:
-
+- `sbi + 0x3d8` = `log_blocks_per_seg`
+- `sbi + 0x408` = `user_block_count`
+- `sbi + 0x4b8` = `mount_opt.opt`
+- `sbi + 0x534` = `gc_mode`
 - `sm_info + 0x00` = `sit_info`
 - `sm_info + 0x08` = `free_info`
 - `sm_info + 0x10` = `dirty_info`
 - `sm_info + 0x5c` = `main_segments`
 - `sm_info + 0x60` = `reserved_segments`
 
-Relevant dirty-manager offsets used by the detector:
-
-- `dirty_info + 0x68..0x7c`: six consecutive per-type dirty counters
-- `dirty_info + 0x84`: prefree/recoverable counter used by detector
-
-## 9. ABI authority
-
-Stock X683 uses:
+Stock ABI:
 
 ```c
 int f2fs_gc(struct f2fs_sb_info *sbi,
@@ -136,181 +40,176 @@ int f2fs_gc(struct f2fs_sb_info *sbi,
             unsigned int segno);
 ```
 
-Transsion wrapper uses `segno = -1` (`NULL_SEGNO`).
+Transsion wrapper passes `NULL_SEGNO` (`-1`).
 
-All future X683 reconstruction must use the four-argument ABI.
-
-## 10. gc_mode policy
-
-`sbi + 0x534` is `gc_mode`.
-
-Compatible policy family:
-
-```c
-GC_NORMAL      = 0
-GC_IDLE_CB     = 1
-GC_IDLE_GREEDY = 2
-GC_URGENT      = 3
-```
-
-Vendor wrapper:
-
-```text
-controller 0 -> normal f2fs_gc
-controller 1 -> temporary gc_mode 2 / GREEDY / restore
-controller 2 -> temporary gc_mode 3 / URGENT / restore
-```
-
-## 11. Transsion controller state
-
-Known semantic fields:
+## Transsion controller
 
 - `+0x990`: 64-bit invocation/cycle counter
-- `+0x998`: controller: 0 normal / 1 greedy / 2 urgent
+- `+0x998`: controller: `0=normal`, `1=GREEDY`, `2=URGENT`
 - `+0x9c0`: controller-write guard
 - `+0x9d0`: loop/termination state
-- `+0x9d4`: detector state; stock writes include 2 and 3
+- `+0x9d4`: detector state
 - `+0x9d8`: repeated-detector counter
 - `+0x9e0`: detector-cycle counter
 - `+0x9f0`: running maximum/statistic
 - `+0x9f4`: saved recoverable-segment baseline
-- `+0x9f8`: stop result, 1/2 for Stops 4/5
-- `+0x9fc`: stop condition, 1/2/3 for Stops 1/2/3
+- `+0x9f8`: stop-result (`1=Stop4`, `2=Stop5`)
+- `+0x9fc`: stop-condition (`1..3`)
 - `+0xa00`: detector mode/state gate
-- `+0xa04`: cadence selector, 0 -> 50 / nonzero -> 500
+- `+0xa04`: cadence selector (`0->50`, nonzero->500)
 - `+0xa05`: loop-active/state byte
 - `+0xa06`: detector-active/continue byte
 - `+0xa08`: signed segment baseline
-- `+0xa0c`: written/recoverable baseline
+- `+0xa0c`: recoverable/written baseline
 
-## 12. Detector arming: current exact reconstruction
+## Detector input reconstruction
 
-At `0x377120..0x377494`, the static detector first increments a global cycle/statistic and maintains `+0x9f0` from a vendor object field.
-
-The initial F2FS-derived quantities are:
+At `0x377570` onward:
 
 ```c
-sm        = SM_I(sbi);
-sit       = sm->sit_info;
-free_i    = sm->free_info;
-dirty_i   = sm->dirty_info;
+sm = SM_I(sbi);
+sit = sm->sit_info;
+free_i = sm->free_info;
+dirty_i = sm->dirty_info;
 
-recoverable = sum(dirty_i counters at 0x68..0x7c);
 user_segments = sbi->user_block_count >> sbi->log_blocks_per_seg;
+sit_segments = (*(u32 *)((char *)sit + 0x10)) >> sbi->log_blocks_per_seg;
+
+recoverable = 0;
+for (i = 0; i < 6; i++)
+    recoverable += *(u32 *)((char *)dirty_i + 0x68 + i * 4);
 ```
 
-A preliminary ratio is computed from main/free/SIT/user quantities and divided by the recoverable-plus-free denominator. The result is held in `w21` and must reach at least `0x15f` for the static arming path to continue.
+The detector derives a capacity bucket:
 
-The detector then checks:
+```c
+bucket = (user_segments >> 13) & 0x7ffff;
+```
 
-1. recoverable dirty state is large enough relative to `user_segments`;
-2. the computed ratio `w21 >= 351`;
-3. free-segment capacity passes a main-segment-derived threshold;
-4. `(user_block_count - sit_blocks)` exceeds a ~2.5% scaled threshold based on `13 * user_block_count`;
-5. `sbi + 0x3f0` exceeds a ~2.5% scaled threshold based on `27 * sit_blocks`.
-
-If all pass:
+Stop-1 and Stop-2 use the table at image offset `+0x4e4`, with entries:
 
 ```text
-+0xa00 = 1
-+0xa04 = 1
+{100,100,100,80,80,80,60,60}
 ```
 
-Otherwise:
+Stop-3 uses a separate 64-bit table at image address corresponding to `0xe74000 + 0x610`, with entries:
 
 ```text
-+0xa00 = 2
+{80,80,80,70,70,70,60,60}
 ```
 
-The common continuation then sets:
+### Stop 1
 
-```text
-+0x9d4 = 2
-+0xa06 = 1
+```c
+delta1 = recoverable - controller->saved_baseline;
+selected_scale = vendor_global_d8c * {1,2,3,4};
+threshold1 = factor[bucket] * selected_scale * 0x51EB851F >> 37;
+if ((s32)delta1 > (s32)threshold1)
+    +0x9fc = 1;
 ```
 
-This is now a proven state transition, not a guessed statistic.
+The multiplier branch is:
 
-## 13. Detector state 3 transition
+- bucket 0 -> `0x800`, `d8c << 1`
+- bucket 1 -> `0xc00`, `d8c * 3`
+- bucket 2..3 -> `0x1000`, `d8c << 1`
+- bucket >=4 -> `0x1800`, `d8c << 2`
 
-At `0x377494` the stock image explicitly performs:
+### Stop 2
+
+```c
+delta2 = recoverable - reserved_segments;
+threshold2 = factor[bucket] * selected_base * 0x51EB851F >> 37;
+if ((s32)delta2 > (s32)threshold2)
+    +0x9fc = 2;
+```
+
+This path uses **unsigned** multiply (`umull`) before the `>>37` shift.
+
+### Stop 3
+
+```c
+span = (s64)(user_segments - sit_segments);
+prod = table2[bucket] * span;
+high = smulh(prod, 0xA3D70A3D70A3D70B);
+scaled = (high + prod) >> 6;
+scaled += (prod < 0);
+reference = (s64)(s32)(recoverable - reserved_segments);
+if (scaled < reference)
+    +0x9fc = 3;
+```
+
+## Detector arming
+
+At `0x377120..0x377494`, the static detector performs filesystem-capacity and ratio checks and moves the detector into active state. The exact control-field stores are preserved in:
+
+`docs/reverse-engineering/tran-gc-detector-arming-deep-pass.md`
+
+The common continuation enables detection and reaches state 3.
+
+## State 3 runtime — exact current reconstruction
+
+At `0x377494`:
 
 ```text
 +0x9d4 = 3
 vendor-state +0x158 = 1
 ```
 
-Two helper calls follow. Their exact semantic names remain unresolved.
+Then:
 
-Subsequent runtime guards check superblock state, filesystem counters, nested objects under `sm_info + 0x80`, vendor state `+0x974`, and vendor/reference state at `+0xa10`.
+1. Load timeout source at controller/vendor `+0xd94`.
+2. If the alternate runtime branch is taken, overwrite `+0xd94` with literal `500`.
+3. Call `0xce58c` to convert the timeout value to scheduler units.
+4. Initialize a waitqueue entry on the stack through `0x9c688`.
+5. Queue the wait through `0x9c6e8`.
+6. Recheck task scheduler state with `0x57554`.
+7. Check controller-object `+0x20` and vendor global `+0x974` as exit/abort gates.
+8. Return to `0x377570` for metric collection after timeout/wake.
 
-## 14. Stop Conditions
+### Timeout helper `0xce58c`
 
-### Stop 1
-
-```c
-recoverable = free_segments + prefree/recoverable_dirty;
-delta1 = recoverable - controller->saved_baseline;
-
-bucket = max(global[0x890], global[0x894]);
-if (bucket <= 7)
-    factor = table[0..7] = {100,100,100,80,80,80,60,60};
-
-threshold1 = factor * selected_scale * 0x51EB851F >> 37;
-```
-
-Predicate:
+For nonnegative values used by this state-3 path:
 
 ```c
-delta1 > threshold1
+return (ms + 3) >> 2;
 ```
 
-→ `+0x9fc = 1`.
+Thus the literal `500` path converts to `125` scheduler-time units in the recovered helper.
 
-### Stop 2
+### `0x57554`
 
-```c
-delta2 = recoverable - reserved_segments;
-threshold2 = factor * threshold_base * 0x51EB851F >> 37;
-```
+This helper reads the current task flags and extracts a scheduler/reschedule bit. It is the standard kernel task-state fast-check used around the timed wait. The exact vendor semantic meaning of the surrounding wait-loop gate remains unresolved.
 
-Predicate:
+### Waitqueue helpers
 
-```c
-delta2 > threshold2
-```
+`0x9c688` is the wait-entry initializer.
 
-→ `+0x9fc = 2`.
+`0x9c6e8` is the enqueue/sleep helper. The state-3 block is therefore a real timed wait/scheduler path, not a busy loop.
 
-### Stop 3
+### Runtime guards
 
-```c
-span = user_segments - sit_segments;
-scaled = signed_fixed_point(table2[bucket] * span);
-reference = recoverable - reserved_segments;
-```
+At `0x3774b8..0x37754c`:
 
-`table2 = {80,80,80,70,70,70,60,60}` and stock uses the signed multiply-high constant `0xA3D70A3D70A3D70B` followed by the observed shift/correction sequence.
+- controller-object `+0x20 != 0` diverts to an exit/alternate path;
+- vendor global `+0x974 != 0` diverts to the exit path;
+- otherwise the timed wait is maintained and rechecked;
+- helper `0xcc774` is used on a nested filesystem/task-state branch before returning to the wait condition.
 
-Predicate:
+The exact semantic names of these two vendor gates are still unresolved.
 
-```c
-scaled < reference
-```
-
-→ `+0x9fc = 3`.
+## Stop 4 / Stop 5
 
 ### Stop 4
 
-Direct stock result:
+Direct stock behavior:
 
 ```text
-condition succeeds
+threshold predicate true
 -> controller +0x998 = 2 unless +0x9c0 blocks
 -> +0x9f8 = 1
+-> SSR-trigger log
 ```
-
-Log explicitly says switch to SSR.
 
 ### Stop 5
 
@@ -326,30 +225,27 @@ if (cycle % interval == 0) {
 }
 ```
 
-## 15. Current source status
+## Transsion wrapper
 
-Main reconstructed sources:
-
-- `fs/f2fs/gc_reconstructed.c`
-- `fs/f2fs/tran_gc_reconstructed.c`
-- `fs/f2fs/tran_gc_thread_reconstructed.c`
-- `fs/f2fs/victim_reconstructed.c`
-
-The code remains reconstructed/inferred and is not yet a verified stock-equivalent build.
-
-## 16. Next reverse-engineering target
-
-The next target is the runtime path following detector state 3:
+At `0x37ada8`:
 
 ```text
-0x377494 onward
--> helper at 0xce58c
--> helper at 0x57554
--> +0x974 guard
--> nested sm_info +0x80 objects
--> helper 0xe0693c
--> helper 0x1eca60
--> transition into static Stop-1..5 evaluation
+controller 0 -> normal f2fs_gc
+controller 1 -> temporary gc_mode=2 (GREEDY), call f2fs_gc(...,-1), restore
+controller 2 -> temporary gc_mode=3 (URGENT), call f2fs_gc(...,-1), restore
 ```
 
-Highest priority is resolving the helper call targets and determining whether they correspond to `detect_charger_type`, `need_switch_ssr`, `tran_urgent_gc`, wakelock checks, or filesystem write-state checks.
+## Next target
+
+Resolve the helper call targets and the remaining state-3 predicates:
+
+```text
+0x377494..0x377570
+    -> 0x57554 task-state helper
+    -> 0xcc774 nested filesystem/task-state check
+    -> 0xe06684 / 0xe0693c metric helpers
+    -> 0x1eca60 scheduler bookkeeping helper
+    -> exact wake sources and vendor semantic names for +0x974 / controller +0x20
+```
+
+Then integrate these exact runtime transitions into `tran_gc_thread_reconstructed.c` and proceed to `0x37b5d4..0x37b8c0` threshold/helper reconstruction.
