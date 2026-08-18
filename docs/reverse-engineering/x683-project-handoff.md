@@ -90,7 +90,7 @@ small scale table @ Image+0x4d4 = {0x800,0xc00,0x1000,0x1000}
 small-table condition: (user_segments >> 15) == 0
 otherwise scale = 0x1800
 selector = max(byte @ 0x1a13890, byte @ 0x1a13894)
-factor table @ Image+0x4e4 = {100,100,100,80,80,80,60,60}
+factor table @ 0x4e4 = {100,100,100,80,80,80,60,60}
 ```
 
 Stop-2:
@@ -123,7 +123,8 @@ Integrated:
 - Stop 1..5 operand chains and writes;
 - state-3 timed-wait structure;
 - freezer-aware task predicate;
-- `+0x974` event producer/consumer role.
+- `+0x974` event producer/consumer role;
+- superblock freeze-protection gate around the vendor GC policy path.
 
 Metric producers:
 
@@ -154,7 +155,7 @@ Stop5 -> +0x998 = 2; +0x9f8 = 2
 
 ## Final state-3 freezer resolution
 
-The region `0x377494..0x377570` is now semantically resolved at the kernel/freezer level.
+The region `0x377494..0x377570` is semantically resolved at the kernel/freezer level.
 
 ```text
 +0x9d4 = 3
@@ -231,6 +232,44 @@ When auxiliary state `+0x898` exists, the callback also signals the object at `+
 
 Public/vendor event identity remains unresolved.
 
+## Superblock freeze-protection helpers
+
+### `0x1eca60`
+
+Resolved as the X683 compiler-emitted form of:
+
+```c
+int __sb_start_write(struct super_block *sb, int level, bool wait);
+```
+
+The detector caller at `0x3773f4` supplies:
+
+```text
+sb = *(sbi + 0x0)
+level = 1
+wait = 0
+```
+
+So this is:
+
+```c
+__sb_start_write(sb, SB_FREEZE_WRITE, false);
+```
+
+That is a **nonblocking freeze-protection acquisition**. A zero return diverts to the alternate/recheck path; a nonzero return allows the subsequent GC-policy/lock sequence.
+
+### `0x1ec9e4`
+
+Resolved as the matching:
+
+```c
+__sb_end_write(sb, 1);
+```
+
+It is called at `0x377438` after the vendor F2FS policy operation.
+
+The underlying primitive is the `percpu_rwsem` reader path used by Android/common 4.14 `fs/super.c`: blocking mode uses `percpu_down_read()`, nonblocking mode uses `percpu_down_read_trylock()`, and release uses `percpu_up_read()`.
+
 ## Transsion GC wrapper
 
 `fs/f2fs/tran_gc_wrapper_reconstructed.c`.
@@ -292,7 +331,7 @@ Exact X683 member names remain unresolved.
 
 ## Current honest project status
 
-Binary-level GC architecture: ~85–90% confidence.
+Binary-level GC architecture: ~88–90% confidence.
 
 Source reconstruction: substantial but not final.
 
@@ -312,6 +351,7 @@ High-confidence completed:
 - `pm_freezing`, `pm_nosig_freezing`, `system_freezing_cnt` identification;
 - vendor-modified `freezing_slow_path()`-equivalent predicate at `0xcc774`;
 - `+0x974` producer and consumer role;
+- `__sb_start_write()` / `__sb_end_write()` role at `0x1eca60` / `0x1ec9e4`;
 - Transsion wrapper behavior;
 - vendor-control registration bindings;
 - stat_info offset map.
@@ -319,7 +359,7 @@ High-confidence completed:
 Remaining high-value gaps:
 1. public/vendor identity and registration path of the `0x37acf8` event callback;
 2. exact state-3 control-flow integration around the resolved freezer predicates;
-3. exact semantic identity of `0x1eca60`;
+3. exact vendor F2FS policy-body differential at `0x366cd4`;
 4. `tran_gc_usb_wakelock` path;
 5. exact stat_info member names;
 6. full exact stock-X683 `gc.c` differential;
@@ -327,6 +367,7 @@ Remaining high-value gaps:
 
 ## Recent commits
 
+- `01b0343e0cb0de555dfd3ca6c2379d153b0219c5` — resolved `0x1eca60` / `0x1ec9e4` as superblock freeze-protection helpers.
 - `799cf3d7131ab0e24237a62e17ad7e5ecd42a117` — final state-3 freezer resolution.
 - `f121afada67d0c8bfacd772277db5718a4adc17b` — semantic freezer predicate reconstruction.
 - `89f35c65d64c6b5243639c497aa7f0ac20b4aa1a` — state-3 exact predicate evidence.
