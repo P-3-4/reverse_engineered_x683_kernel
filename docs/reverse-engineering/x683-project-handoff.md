@@ -66,7 +66,7 @@ Transsion uses `NULL_SEGNO`.
 +0xa05  loop-active byte
 +0xa06  detector-active/continue byte
 +0xa08  signed segment baseline
-+0xa0c  written/recoverable baseline
++0xa0c  baseline recoverable/free-progress value
 ```
 
 ## Reconstructed threshold/helper
@@ -121,6 +121,23 @@ Primary source: `fs/f2fs/tran_gc_thread_reconstructed.c`.
 
 Integrated: detector arming/state gate, state-3 timed wait/recheck, metric collection, Stop 1..5, controller transitions, cadence/baseline handling.
 
+Metric producer correction:
+
+```text
+arming_dirty_segments = sum(dirty_info +0x68 .. +0x7c)
+recoverable_segments  = free_info->free_segments + dirty_info->nr_dirty[PRE]
+```
+
+Stop operands:
+
+```text
+Stop1 delta = recoverable_segments - +0x9f4
+Stop2 delta = recoverable_segments - sm_info->reserved_segments
+Stop3 reference = recoverable_segments - reserved_segments
+Stop4 delta = (running_max - recoverable_segments) + saved_sit_segments - sit_segments
+Stop5 progress = sit_segments + (recoverable_segments - +0xa0c)
+```
+
 Direct Stop writes:
 
 ```text
@@ -131,9 +148,44 @@ Stop4 -> +0x998 = 2 unless +0x9c0 blocks; +0x9f8 = 1
 Stop5 -> +0x998 = 2; +0x9f8 = 2
 ```
 
-State 3 uses a real timed wait path through `0xce58c`, waitqueue helpers around `0x9c688/0x9c6e8`, then task-state/recheck before metric collection.
+## State-3 wait/recheck resolution
 
-**Sanity-audit correction:** do not treat the current thread reconstruction as byte-accurate source. The earlier generic `(timeout_ms + 3) >> 2` `msecs_to_jiffies` approximation was identified as invalid and must not be reintroduced. `0xcc774`, `+0x974`, and controller-object `+0x20` remain vendor/task predicates with unresolved proprietary semantics.
+The stock state-3 sequence is now resolved at the helper level:
+
+```text
++0x9d4 = 3
++0xd94 -> 0xce58c -> positive-ms-to-jiffies conversion
+0x57554 -> TIF_NEED_RESCHED bit test
+0x9c688 -> wait entry initialization
+0x9c6e8 -> prepare-to-wait / TASK_INTERRUPTIBLE insertion
+0x57554 -> scheduler recheck
+0xcc774 -> unresolved vendor/task abort predicate
+0x9c8d0 -> finish_wait
+0x57554 -> final scheduler recheck
++0x974 -> producer-driven wake/recheck gate
+metric collection
+```
+
+`+0x974` is no longer considered unresolved as a storage role. Its producer is the callback-like function at `0x37acf8`:
+
+```text
+event != 9 -> return
+
+event == 9:
+  state == 0 -> +0x974 = 1
+  state == 4 -> +0x974 = 0
+  other states -> unchanged
+```
+
+The callback reads `*(event_data + 0x8)`. When auxiliary state `+0x898` exists, it also signals the object at `+0x978` with `(3,1,0)` in both state-changing branches.
+
+The callback's public/vendor event name and registration binding remain unresolved.
+
+The exact helper `0xcc774` remains unresolved by semantic name. It examines task state and, on one branch, calls `0x1051a8`, which tests bits `0x6` in a field reached through `task + 0x950`.
+
+The controller-object `+0x20` predicate remains unresolved.
+
+`0x1eca60` remains unresolved by semantic name; its body is a generic per-object reference/locking operation.
 
 ## Transsion GC wrapper
 
@@ -208,25 +260,32 @@ High-confidence completed:
 - boot/Image verification
 - critical F2FS layout/ABI mapping
 - controller semantics
-- Stop 1–5 direct state writes
+- Stop 1–5 direct state writes and operand chains
 - recovered threshold arithmetic
+- detector arming predicates
+- state-3 wait helper identification
+- `+0x974` producer and consumer role
 - Transsion wrapper behavior
 - stock-vs-vendor architectural separation
 - vendor-control registration bindings
 - stat_info offset map
 
 Remaining high-value gaps:
-1. exact callback/read/write semantics for the three vendor descriptors;
-2. `tran_gc_usb_wakelock` path;
-3. exact semantics of `0xcc774`, `+0x974`, controller-object `+0x20`;
-4. exact stat_info member names;
-5. final byte-accurate kthread scheduler/wakeup wrapper;
-6. full compilation/integration against the correct X683/H694 4.14.141 source base.
+1. public/vendor identity and registration path of the `0x37acf8` event callback;
+2. exact semantic name/body integration for `0xcc774`;
+3. exact meaning of controller-object `+0x20`;
+4. exact semantic identity of `0x1eca60`;
+5. `tran_gc_usb_wakelock` path;
+6. exact stat_info member names;
+7. final byte-accurate kthread scheduler/wakeup wrapper;
+8. full compilation/integration against the correct X683/H694 4.14.141 source base.
 
 ## Known sanity-audit commits
 
 - `96b4d5916890541b0d39ca31946ee07bfe71869e` — corrected thread scaffold / removed invalid timeout approximation.
 - `c96a942af39a3fc856106475f2a0afa5d8bd9c5c` — audit documentation.
 - `e7da9fa42f29a95a649509b45889a0712da97efd` — source-quality corrections.
+- `53c9df976fd9ef7f1d7a7c614657c159a90393bc` — resolved `+0x974` producer semantics in thread scaffold.
+- `3fd2a50bf6c08b64395c4c7eb1618becbecad033` — documented exact GC wait-flag producer.
 
 Use this file as the canonical continuation point in future chats. Read it from `main` before continuing.
