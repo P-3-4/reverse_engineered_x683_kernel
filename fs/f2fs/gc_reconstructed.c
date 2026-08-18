@@ -1,6 +1,5 @@
 /*
  * X683/H694 F2FS GC reconstruction.
- *
  * Reconstructed/inferred code, not recovered proprietary source.
  * Target ABI: 4.14-era f2fs_gc(sbi, sync, background).
  */
@@ -8,12 +7,7 @@
 #include "f2fs.h"
 #include "segment.h"
 
-/*
- * Important revision boundary:
- * the 4.15 development line converted sentry_lock to rwsem. The 4.14
- * lineage used by the X683 target retained the mutex form. This reconstruction
- * therefore keeps the mutex until the stock binary proves otherwise.
- */
+/* 4.14-era lineage retains mutex sentry_lock; 4.15 later changed this. */
 static int x683_get_victim(struct f2fs_sb_info *sbi,
 		unsigned int *victim, int gc_type)
 {
@@ -21,13 +15,13 @@ static int x683_get_victim(struct f2fs_sb_info *sbi,
 	int ret;
 
 	mutex_lock(&sit_i->sentry_lock);
-	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim,
-			gc_type, NO_CHECK_TYPE, LFS);
+	ret = DIRTY_I(sbi)->v_ops->get_victim(sbi, victim, gc_type,
+			NO_CHECK_TYPE, LFS);
 	mutex_unlock(&sit_i->sentry_lock);
-
 	return ret;
 }
 
+/* Returns 1 only when the whole victim section was reclaimed. */
 static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 		unsigned int start_segno, struct gc_inode_list *gc_list,
 		int gc_type)
@@ -37,9 +31,9 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 	struct blk_plug plug;
 	unsigned int segno = start_segno;
 	unsigned int end_segno = start_segno + sbi->segs_per_sec;
-	int sec_freed = 0;
 	unsigned char type = IS_DATASEG(get_seg_entry(sbi, segno)->type) ?
 		SUM_TYPE_DATA : SUM_TYPE_NODE;
+	int seg_freed = 0;
 
 	if (sbi->segs_per_sec > 1)
 		f2fs_ra_meta_pages(sbi, GET_SUM_BLOCK(sbi, segno),
@@ -66,17 +60,15 @@ static int x683_do_garbage_collect(struct f2fs_sb_info *sbi,
 			goto next;
 
 		sum = page_address(sum_page);
-
 		if (type == SUM_TYPE_NODE)
 			gc_node_segment(sbi, sum->entries, segno, gc_type);
 		else
 			gc_data_segment(sbi, sum->entries, gc_list, segno, gc_type);
 
 		stat_inc_seg_count(sbi, type, gc_type);
-
 		if (gc_type == FG_GC &&
 				get_valid_blocks(sbi, segno, false) == 0)
-			sec_freed++;
+			seg_freed++;
 next:
 		f2fs_put_page(sum_page, 0);
 	}
@@ -88,7 +80,7 @@ next:
 	blk_finish_plug(&plug);
 	stat_inc_call_count(sbi->stat_info);
 
-	return sec_freed;
+	return (gc_type == FG_GC && seg_freed == sbi->segs_per_sec);
 }
 
 int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background)
@@ -125,7 +117,6 @@ gc_more:
 
 	if (gc_type == BG_GC && !background)
 		goto stop;
-
 	if (!x683_get_victim(sbi, &segno, gc_type))
 		goto stop;
 
