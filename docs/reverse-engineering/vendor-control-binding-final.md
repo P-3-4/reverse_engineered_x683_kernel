@@ -36,7 +36,7 @@ Each control is registered through:
 0x274ea0 -> 0x274dac
 ```
 
-The call shape at `0x37af..0x37b2..` is:
+The call shape is:
 
 ```text
 x0 = control-name string
@@ -45,7 +45,7 @@ x2 = [Image + 0x1a13a20]   // common runtime registry object
 x3 = per-control descriptor/backing object
 ```
 
-`0x274ea0` clears `x4` and tail-calls `0x274dac`.
+`0x274ea0` clears `x4` and calls `0x274dac`.
 
 The `0x274dac` body proves the per-control pointer is retained in the newly created registration node:
 
@@ -58,17 +58,17 @@ The `0x274dac` body proves the per-control pointer is retained in the newly crea
 
 where `x20 = x3`.
 
-Therefore the node stores:
+Thus, for these registration nodes:
 
 ```text
-node + 0x20 = common registration object/implementation context
-node + 0x28 = per-control descriptor/backing object (x3)
-node + 0x60 = x4/cookie (zero in this wrapper)
+node + 0x20 = common implementation/operation context
+node + 0x28 = per-control descriptor/backing object
+node + 0x60 = wrapper cookie (zero for this registration path)
 ```
 
-The common object at `0x274ec8` performs list lookup/linking by name and does not implement an individual control.
+The helper at `0x274ec8` is generic registry lookup/linking; it is not a vendor-control implementation.
 
-## 3. Exact named controls and backing objects
+## 3. Exact named controls and descriptor addresses
 
 ### `need_switch_ssr`
 
@@ -78,14 +78,14 @@ string:            Image + 0x10a6359
 x3 descriptor:     Image + 0x173b9d0
 ```
 
-The boot Image contains zeroed storage at `0x173b9d0`, consistent with BSS/runtime state rather than an inline function address.
+The static Image bytes at `0x173b9d0` are zeroed, so this is runtime/BSS-backed state, not an inline function pointer.
 
 ### `tran_urgent_gc`
 
 ```text
-registration call: 0x37b0a4
-string:            Image + 0x10a65?? / "tran_urgent_gc"
-x3 descriptor:     Image + 0x173be80
+registration call: 0x37b068
+string:            Image + 0x10a63ac
+x3 descriptor:     Image + 0x173bbb0
 ```
 
 The descriptor storage is zero-initialized in the static Image.
@@ -98,55 +98,62 @@ string:            Image + 0x10a6414
 x3 descriptor:     Image + 0x173bf70
 ```
 
-Again, this is zero-initialized runtime storage, not a code address.
+Again, the descriptor is runtime/BSS-backed storage.
 
-The exact string address for `tran_urgent_gc` should be taken from the disassembly at the registration call; the descriptor binding itself is direct.
+### `tran_gc_usb_wakelock`
 
-## 4. What this proves
+String:
 
-The three names are **registered controls/attributes with per-control backing descriptors**.
+```text
+Image + 0x10a5ee7
+```
 
-They are **not proven to be direct function symbols**.
+It is not part of this contiguous three-control registration sequence and remains separately unresolved.
 
-The implementation path is generic:
+## 4. What is actually proven
+
+The three named controls are **registered controls/attributes with distinct per-control backing descriptors**.
+
+They are **not proven to be standalone function symbols**.
+
+The proven path is:
 
 ```text
 control name
    -> common runtime object @ Image + 0x1a13a20
    -> generic registration wrapper 0x274ea0
    -> node construction 0x274dac
-   -> node retains per-control descriptor at +0x28
+   -> per-control descriptor retained at node +0x28
    -> common registry/attribute machinery
 ```
 
-This explains why searching for a unique branch-and-link immediately associated with each string does not produce a separate `need_switch_ssr`, `tran_urgent_gc`, or `detect_charger_type` function body.
+The operation layer is shared. The per-control state/data differs.
 
-## 5. Generic callback/operation path
+This explains why a direct BL search around each name does not reveal a unique implementation function.
 
-The registry implementation uses a common operation structure. In the surrounding registry helpers, nodes expose an operation/context pointer and a private-data pointer rather than storing one vendor implementation function per control.
+## 5. Generic operation path
 
-At the operation path around `0x2744d0` the common machinery loads an operation function pointer from its operation object and invokes it with the node/context and the current attribute/value parameters.
+The surrounding registry machinery uses an operation/context object plus per-node private data rather than a dedicated function pointer embedded beside each control name.
 
-This is the decisive architectural distinction:
+The helper family around `0x2743xx..0x2746xx` contains the actual operation dispatch. At `0x2744d0`, the generic machinery loads an operation function pointer from its operation object and invokes it with the node/context and attribute/value parameters.
+
+Therefore the correct model is:
 
 ```text
-per-control state/data = distinct
-control operation       = common/generic
+common operation/callback
+        +
+per-control descriptor/private data
 ```
 
-So the correct reverse-engineering target is the **generic show/store/read/write operation** and then the behavior of each per-control backing descriptor.
+not:
 
-## 6. `tran_gc_usb_wakelock`
+```text
+control name -> unique vendor function
+```
 
-The string `tran_gc_usb_wakelock` exists at Image `0x10a5ee7` but is not part of the same contiguous registration sequence containing the three named controls above.
+## 6. Relation to the proven GC state machine
 
-Its registration/use site must therefore be traced independently.
-
-Do not assign it to the same descriptor table without direct evidence.
-
-## 7. Relation to the proven GC controller
-
-The vendor GC detector independently proves:
+The direct stock Stop-4 path remains:
 
 ```text
 Stop 4
@@ -158,37 +165,29 @@ Stop 4
   -> restore previous gc_mode
 ```
 
-That controller path is distinct from the debug/control registration mechanism.
+Thus the existence of the `tran_urgent_gc` control does **not** prove that Stop 4 calls a function named `tran_urgent_gc`. The Stop-4 machine code itself performs the controller store directly.
 
-The presence of the `tran_urgent_gc` control therefore does not by itself prove that Stop 4 calls a function named `tran_urgent_gc`. The stock Stop-4 basic block directly performs the controller store; the wrapper later consumes that state.
+Similarly, `need_switch_ssr` and `detect_charger_type` must not be inserted into `tran_gc_thread_func()` without a direct read/store/call chain to their backing descriptors.
 
-Likewise, `need_switch_ssr` and `detect_charger_type` should not be inserted into `tran_gc_thread_func()` unless a direct use of their backing descriptors is recovered.
+## 7. Final binding table
 
-## 8. Final binding table
+| Name | Registration call | String | Descriptor | Direct standalone implementation | Status |
+|---|---:|---:|---:|---|---|
+| `need_switch_ssr` | `0x37af88` | `0x10a6359` | `0x173b9d0` | not proven | **bound** |
+| `tran_urgent_gc` | `0x37b068` | `0x10a63ac` | `0x173bbb0` | not proven | **bound** |
+| `detect_charger_type` | `0x37b184` | `0x10a6414` | `0x173bf70` | not proven | **bound** |
+| `tran_gc_usb_wakelock` | separate path | `0x10a5ee7` | unresolved | unresolved | **unbound** |
 
-| Name | Registration | Per-control descriptor | Direct implementation function | Status |
-|---|---:|---:|---:|---|
-| `need_switch_ssr` | `0x37af88` | `Image + 0x173b9d0` | not separate/proven | **bound to control descriptor** |
-| `tran_urgent_gc` | `0x37b0a4` | `Image + 0x173be80` | not separate/proven | **bound to control descriptor** |
-| `detect_charger_type` | `0x37b184` | `Image + 0x173bf70` | not separate/proven | **bound to control descriptor** |
-| `tran_gc_usb_wakelock` | separate path | unresolved | unresolved | **unbound** |
+## 8. Remaining useful work
 
-## 9. Next binary target
-
-The registration problem itself is no longer the blocker.
-
-The remaining useful target is now:
+The registration structure itself is no longer the blocker. The remaining high-value task is to trace **reads/writes of the three backing descriptors through the common operation layer** and correlate those values with:
 
 ```text
-per-control descriptor storage
-        ↓
-generic attribute read/write operation
-        ↓
-actual values written into +0x173b9d0 / +0x173be80 / +0x173bf70
-        ↓
-callers/readers of those values
-        ↓
-final vendor semantic binding
+controller +0x998
+controller +0x9c0
+vendor +0x974
+vendor +0xd84/+0xd94
+vendor +0xa10
 ```
 
-In particular, direct static references to these BSS addresses are sparse because the generic registry carries the descriptor pointer. Therefore the next pass should reverse the common operation callback invoked from the registry path, rather than continue searching for three imaginary standalone functions.
+That will establish whether any of the three controls directly drive the GC controller or are only diagnostic/configuration endpoints.
