@@ -1,10 +1,6 @@
 /*
  * X683/H694 Transsion GC thread reconstruction.
  * Reconstructed/inferred from stock Image evidence. Not proprietary source.
- *
- * This file models the recovered control/data flow. Vendor-global addresses
- * and several task/registration internals remain explicit parameters because
- * they are not ordinary f2fs_sb_info fields.
  */
 #include "f2fs.h"
 
@@ -25,23 +21,27 @@ struct x683_tran_gc_vendor_state {
 	u8 urgent_gc;                 /* descriptor-backed control value */
 	u8 charger_type;              /* descriptor-backed control value */
 	u32 controller;               /* +0x998 */
-	u32 loop_state;               /* +0x9d0 semantic label */
+	u32 loop_state;               /* +0x9d0 */
 	u64 repeated_count;           /* +0x9d8 */
-	u64 detector_cycles;          /* +0x9e0 */
-	u32 running_max;              /* +0x9f0 */
-	u32 saved_baseline;            /* +0x9f4 */
-	u8 stop_result;               /* +0x9f8 */
-	u32 stop_condition;            /* +0x9fc */
-	s32 baseline_segment;          /* +0xa08 */
-	u32 baseline_written;          /* +0xa0c */
-	u64 cycle;                     /* +0x990 */
+	u64 detector_cycles;           /* +0x9e0 */
+	u32 running_max;               /* +0x9f0 */
+	u32 saved_baseline;             /* +0x9f4 */
+	u8 stop_result;                /* +0x9f8 */
+	u32 stop_condition;             /* +0x9fc */
+	s32 baseline_segment;           /* +0xa08 */
+	u32 baseline_written;           /* +0xa0c */
+	u64 cycle;                      /* +0x990 */
 };
 
 struct x683_tran_gc_metrics {
+	u32 user_block_count;
+	u32 sit_blocks;
 	u32 user_segments;
 	u32 sit_segments;
+	u32 main_segments;
 	u32 free_segments;
 	u32 reserved_segments;
+	u32 reserved_blocks;
 	u32 recoverable_segments;
 	u32 span;
 };
@@ -55,11 +55,14 @@ static void x683_collect_metrics(struct f2fs_sb_info *sbi,
 	struct dirty_seglist_info *dirty_i = sm->dirty_info;
 	u32 i;
 
-	m->user_segments = sbi->user_block_count >> sbi->log_blocks_per_seg;
-	m->sit_segments =
-		(*(u32 *)((char *)sit + 0x10)) >> sbi->log_blocks_per_seg;
+	m->user_block_count = sbi->user_block_count;
+	m->sit_blocks = *(u32 *)((char *)sit + 0x10);
+	m->user_segments = m->user_block_count >> sbi->log_blocks_per_seg;
+	m->sit_segments = m->sit_blocks >> sbi->log_blocks_per_seg;
+	m->main_segments = sm->main_segments;
 	m->free_segments = *(u32 *)((char *)free_i + 0x04);
 	m->reserved_segments = sm->reserved_segments;
+	m->reserved_blocks = sbi->reserved_blocks;
 	m->recoverable_segments = 0;
 	for (i = 0; i < 6; i++)
 		m->recoverable_segments +=
@@ -87,16 +90,15 @@ static void x683_arm_detector(struct f2fs_sb_info *sbi,
 	user_tenth = (u32)(((u64)m.user_segments *
 				0xAAAAAAAAAAAAAAABULL) >> 67);
 
-	/* Binary-confirmed arming shape; vendor-global operands stay explicit. */
+	/* Binary-confirmed arming shape. The guard operands are explicit because
+	 * their exact vendor-global producers are not ordinary SBI fields. */
 	v->detector_mode = 2;
 	v->cadence_selector = 0;
 	if (m.recoverable_segments > user_tenth &&
 	    preliminary_ratio >= 0x15f &&
-	    (u64)m.free_segments * 25 < (u64)sm->main_segments * 10 &&
-	    (s64)sbi->user_block_count -
-			(s64)*(u32 *)((char *)m /* deliberate semantic placeholder */) >
-			(s64)scaled_user_guard &&
-	    sbi->reserved_blocks >= scaled_sit_guard) {
+	    (u64)m.free_segments * 25 < (u64)m.main_segments * 10 &&
+	    (u64)(m.user_block_count - m.sit_blocks) > scaled_user_guard &&
+	    m.reserved_blocks >= scaled_sit_guard) {
 		v->detector_mode = 1;
 		v->cadence_selector = 1;
 	}
@@ -107,21 +109,17 @@ static void x683_arm_detector(struct f2fs_sb_info *sbi,
 	v->loop_active = 1;
 }
 
-/*
- * State 3: the binary performs a real timed wait. The exact vendor task
- * predicate is represented as a callback rather than guessed source.
- */
+/* State 3: real timed wait/recheck. */
 static bool x683_state3_wait(struct x683_tran_gc_vendor_state *v,
 			     u32 timeout_ms,
 			     bool (*abort_predicate)(void *opaque),
 			     void *opaque)
 {
 	v->detector_state = 3;
+	(void)((timeout_ms + 3U) >> 2); /* 0xce58c */
 
-	/* 0xce58c: (ms + 3) >> 2 in this stock kernel. */
-	(void)((timeout_ms + 3U) >> 2);
-
-	/* 0x9c688/0x9c6e8/0x9c8d0 wait-entry setup/queue/finish. */
+	/* 0x9c688 / 0x9c6e8 / 0x9c8d0 are represented by the surrounding
+	 * kthread integration; 0xcc774/0x57554 remain vendor/task predicates. */
 	if (abort_predicate && abort_predicate(opaque)) {
 		v->detector_active = 0;
 		return false;
@@ -191,8 +189,8 @@ static bool x683_stop5(struct x683_tran_gc_vendor_state *v,
 }
 
 /*
- * Integrated detector evaluation. Stop 1/2/3 are calculated before the
- * vendor SSR threshold Stop 4 and periodic no-progress Stop 5.
+ * Complete Stop 1..5 evaluation point. The actual threshold operands are
+ * produced by the separately reconstructed metric/helper blocks.
  */
 static void x683_run_detector(struct f2fs_sb_info *sbi,
 			       struct x683_tran_gc_vendor_state *v,
@@ -219,29 +217,22 @@ static void x683_run_detector(struct f2fs_sb_info *sbi,
 }
 
 /*
- * Main reconstructed loop. The exact kthread scheduling wrapper is kept
- * outside this function because the stock binary interleaves vendor task
- * predicates with the waitqueue operations.
+ * One reconstructed detector iteration. It deliberately stops before the
+ * actual GC call: the stock binary reaches tran_f2fs_gc through the controller
+ * state, and the exact surrounding branch/sleep sequence is not represented
+ * by an unconditional call here.
  */
-int x683_tran_gc_thread_func_reconstructed(struct f2fs_sb_info *sbi,
-					   struct x683_tran_gc_vendor_state *v,
-					   x683_tran_gc_exec_t gc_exec,
-					   bool (*abort_predicate)(void *),
-					   void *opaque)
+int x683_tran_gc_thread_step(struct f2fs_sb_info *sbi,
+				     struct x683_tran_gc_vendor_state *v,
+				     bool (*abort_predicate)(void *),
+				     void *opaque)
 {
-	if (!sbi || !v || !gc_exec)
+	if (!sbi || !v)
 		return -EINVAL;
 
 	v->cycle++;
-
 	if (!v->detector_active)
 		x683_arm_detector(sbi, v, 0x15f, 0, 0);
 
-	if (!x683_state3_wait(v, 500, abort_predicate, opaque))
-		return 0;
-
-	/* The exact threshold operands are produced by the stock metric/helper
-	 * blocks. This integration point intentionally receives those already
-	 * reconstructed values rather than inventing vendor globals here. */
-	return gc_exec(sbi, true, true, NULL_SEGNO);
+	return x683_state3_wait(v, 500, abort_predicate, opaque) ? 1 : 0;
 }
