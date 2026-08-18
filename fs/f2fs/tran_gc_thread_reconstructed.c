@@ -3,9 +3,6 @@
  *
  * Reconstructed/inferred directly from stock boot.img AArch64 evidence.
  * NOT recovered proprietary Transsion source.
- *
- * This revision pins the register producers used by the Stop-1..5 detector
- * and the detector arming/state transitions at 0x377120..0x377494.
  */
 
 #include "f2fs.h"
@@ -168,16 +165,39 @@ static void x683_detector_arm(struct f2fs_sb_info *sbi,
 		st->cadence_selector = 1;
 	}
 
-	/* Stock writes +0xa00 = mode. */
 	st->loop_state = mode;
 	st->detector_state = 2;
 	st->detector_enabled = 1;
 }
 
 /*
- * One detector iteration. Operand production is now separated from the
- * state machine so the stock register relationships remain visible.
+ * Stock 0x377494..0x377570: timed detector wait/re-entry gate.
+ *
+ * 0x377494: detector state = 3.
+ * 0x3774a8: 0xce58c converts the vendor millisecond timeout to jiffies.
+ * 0x3774ac: converted timeout retained in x21.
+ * 0x3774b0: 0x57554 tests a current-task flag bit.
+ * 0x3774d0: timeout is converted again from global +0xd94 when the
+ *            vendor gate permits the timed-wait path.
+ * 0x3774dc: stack waitqueue entry is initialized by 0x9c688.
+ * 0x3774f4: entry is linked into the queue at x27 by 0x9c6e8.
+ * 0x377508: current-task flag is tested again before sleeping.
+ * 0x37753c: remaining timeout is passed to 0xcc774, the generic scheduler
+ *            timeout path; the return value controls re-entry.
+ * 0x377548: waitqueue entry is removed by 0x9c8d0.
+ * 0x377554: task-state flag is retested.
+ * 0x377570: execution falls into metric collection/detector evaluation.
+ *
+ * The exact vendor semantic names of +0x974/+0xd84/+0xd94 remain unresolved.
  */
+static void x683_detector_state3(struct x683_tran_gc_state *st,
+					u32 timeout_ms)
+{
+	st->detector_state = 3;
+	(void)timeout_ms;
+	/* Actual waitqueue/schedule_timeout operations are kernel primitives. */
+}
+
 static void x683_tran_gc_detect(struct x683_tran_gc_state *st,
 				s32 delta1, s32 threshold1,
 				s32 delta2, s32 threshold2,
@@ -197,10 +217,4 @@ static void x683_tran_gc_detect(struct x683_tran_gc_state *st,
 
 	st->baseline_seg = reference;
 	st->baseline_written_seg = current_recoverable;
-}
-
-/* Stock 0x377494 transition: detector state 3. */
-static void x683_detector_state3(struct x683_tran_gc_state *st)
-{
-	st->detector_state = 3;
 }
