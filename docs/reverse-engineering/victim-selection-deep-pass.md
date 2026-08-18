@@ -4,142 +4,131 @@
 
 Target: X683/H694 MT6768, Linux 4.14.141-era F2FS.
 
-This pass resolves the generic dirty-segment victim-selection machinery surrounding `DIRTY_I(sbi)->v_ops->get_victim()` and corrects two earlier reconstruction errors: the `sentry_lock` primitive and the owner of `last_victim[]`.
+This pass resolves the generic dirty-segment victim-selection machinery around `DIRTY_I(sbi)->v_ops->get_victim()` and separates the 4.14 target from later 4.15 changes.
 
-## 1. Locking correction
+## 1. `sentry_lock` revision boundary
 
-The earlier reconstruction used `mutex_lock(&SIT_I(sbi)->sentry_lock)`. That is incorrect.
+The previous reconstruction incorrectly promoted the later 4.15 lock form to the X683 target.
 
-The historical 4.15 implementation uses:
+The relevant history shows the older GC wrapper using:
 
 ```c
-down_write(&SIT_I(sbi)->sentry_lock);
+mutex_lock(&sit_i->sentry_lock);
 ret = DIRTY_I(sbi)->v_ops->get_victim(...);
-up_write(&SIT_I(sbi)->sentry_lock);
+mutex_unlock(&sit_i->sentry_lock);
 ```
 
-The X683 reconstruction now follows that shape. The binary must still be checked for a vendor-local lock primitive, but the previous mutex claim is removed.
+The 4.15 development line later converted this to `down_write()/up_write()` as part of the broader `sentry_lock` rwsem conversion. The 4.14 stable lineage still contains `mutex_lock(&sit_i->sentry_lock)` in the corresponding segment-management code, so the X683 4.14.141 reconstruction retains the mutex until stock binary evidence says otherwise.
 
-## 2. `last_victim[]` owner correction
+This is now a **revision-specific correction**, not an unresolved generic lock choice.
 
-`last_victim[]` is associated with `sit_info`, not directly with `f2fs_sb_info` in the historical target lineage:
+## 2. `last_victim[]` owner
+
+The victim-selection implementation in the later 4.15 lineage uses:
 
 ```c
 struct sit_info *sm = SIT_I(sbi);
 sm->last_victim[p.gc_mode]
 ```
 
-This is important because the GC search cursor and the SIT manager are coupled. The recovered X683 manager relationship `sm_info -> sit_info` therefore explains the cursor accesses without requiring an additional `f2fs_sb_info` field.
+Earlier development history temporarily exposed the cursor through `sbi`; the later refactor moved/normalized it through `sit_info`. Therefore the semantic identity is definitely the GC search cursor, while the exact X683 storage owner must be matched against the stock binary before declaring the C member placement final.
+
+The current reconstruction uses `SIT_I(sbi)->last_victim[]` because it matches the recovered manager topology and the target-era source family.
 
 ## 3. Policy selection
 
 For LFS GC:
 
-- `gc_mode = GC_CB` for BG_GC by default.
-- `gc_mode = GC_GREEDY` for FG_GC by default.
+- `GC_CB` for BG_GC by default.
+- `GC_GREEDY` for FG_GC by default.
 - dirty bitmap = `dirty_segmap[DIRTY]`.
 - search count = `nr_dirty[DIRTY]`.
 - search unit = `segs_per_sec`.
 
 For SSR:
 
-- `gc_mode = GC_GREEDY`.
-- bitmap = type-specific dirty bitmap.
-- search count = type-specific `nr_dirty`.
-- search unit = 1 segment.
+- `GC_GREEDY`.
+- type-specific dirty bitmap/count.
+- search unit = 1.
 
-Historical 4.15 also resets the search offset to zero for hot-data/node selection and otherwise starts from `SIT_I(sbi)->last_victim[p.gc_mode]`.
+Hot-data/node selection starts from offset zero in the historical policy code; other LFS selection starts from the GC-mode-specific last-victim cursor.
 
 ## 4. Cost model
 
-The historical cost path is now reconstructed explicitly.
-
 ### Greedy
-
-For LFS + `GC_GREEDY`:
 
 ```c
 cost = get_valid_blocks(sbi, segno, true);
 ```
 
-The minimum valid-block victim wins.
+Lowest valid-block count wins.
 
 ### Cost-benefit
 
-For LFS + `GC_CB`:
-
-1. Average segment modification time across the section.
-2. Average valid blocks across the section.
-3. Compute utilization `u` as a percentage.
-4. Maintain `min_mtime` / `max_mtime` in `sit_info`.
-5. Convert the age to a 0..100 scale.
-6. Return:
+For each section, average modification time and valid blocks are calculated. Utilization and normalized age produce:
 
 ```c
 UINT_MAX - ((100 * (100 - u) * age) / (100 + u))
 ```
 
-This makes lower returned cost preferable.
+Lower cost wins.
 
 ### SSR
 
-SSR uses checkpoint-valid blocks rather than the LFS GC cost function.
+Checkpoint-valid blocks are used as the cost.
 
 ## 5. Candidate scan
 
-The scan is section-aware when `ofs_unit > 1`:
+The selector:
 
-1. Start at `p.offset`.
-2. Find the next dirty bit.
-3. Advance to the next section boundary.
-4. Count dirty bits in that section toward `nsearched`.
-5. Convert segment → section.
-6. Reject unsafe/used sections.
-7. Reject a section already reserved as a BG victim when running BG_GC.
-8. For FG_GC/LFS, reject sections with no suitable FG candidate.
-9. Calculate cost.
-10. Keep the lowest-cost segment.
+1. locks `dirty_i->seglist_lock`;
+2. initializes the policy;
+3. starts from `last_victim[gc_mode]` where applicable;
+4. scans dirty entries with `find_next_bit()`;
+5. aligns LFS searches to `segs_per_sec`;
+6. counts dirty candidates toward `max_search`;
+7. rejects unsafe sections;
+8. rejects BG sections already present in `victim_secmap`;
+9. rejects FG/LFS sections with `no_fggc_candidate()`;
+10. calculates the candidate cost;
+11. records the minimum-cost victim;
+12. updates the search cursor and wraps it at the main-area segment count.
 
-This is the core candidate-selection state machine.
+## 6. BG → FG handoff
 
-## 6. Search cursor behavior
+BG GC places the selected section in `dirty_i->victim_secmap`.
 
-At the end of a bounded search, the historical code updates:
-
-```c
-sm->last_victim[p.gc_mode]
-```
-
-using the previous cursor and the last scanned segment, then wraps it by `MAIN_SEGS(sbi)`.
-
-This is not merely an optimization: it prevents repeated scanning of the same dirty range and therefore is part of the observable GC state machine.
-
-## 7. BG/FG victim handoff
-
-Background GC marks the selected section in `dirty_i->victim_secmap`.
-
-Foreground GC can first consume entries from that map using `check_bg_victims()`; sections are rejected if `sec_usage_check()` or `no_fggc_candidate()` says they are unsuitable.
-
-Therefore the manager has a two-stage relationship:
+FG GC can preferentially consume these candidates through `check_bg_victims()`, subject to `sec_usage_check()` and `no_fggc_candidate()`.
 
 ```text
 BG candidate
-   -> victim_secmap
-   -> FG check_bg_victims()
-   -> FG victim
+    -> victim_secmap
+    -> check_bg_victims()
+    -> FG victim
 ```
 
-This is stronger than treating BG and FG selection as independent scans.
+## 7. `do_garbage_collect()` return semantics
 
-## 8. `f2fs_gc()` API boundary
+For the three-argument target lineage, the reconstructed helper returns a **section-freed boolean/count of one**, not a raw segment count:
 
-Historical source shows the victim-segment argument was added after the three-argument API. The patch that added the fourth argument also introduced `init_segno` and the `FLUSH_DEVICE` cursor restoration. Therefore the X683 three-argument target must **not** import `init_segno`/`FLUSH_DEVICE` restoration merely because it appears in later 4.15 trees.
+```c
+return (gc_type == FG_GC &&
+        seg_freed == sbi->segs_per_sec);
+```
 
-The current reconstruction consequently does not claim a `FLUSH_DEVICE` reset for the X683 three-argument ABI.
+The caller then increments `sec_freed` when the helper succeeds during foreground GC.
 
-## 9. Recovered X683 layout correlation
+This distinction is important and has been corrected in `gc_reconstructed.c`.
 
-Known high-confidence relationships remain:
+## 8. Three-argument ABI boundary
+
+The historical change that added the fourth `segno` argument also introduced `init_segno` and `FLUSH_DEVICE` cursor restoration. Those later fields must not be imported into the X683 three-argument implementation without binary evidence.
+
+The current X683 reconstruction therefore does not claim an `init_segno`/`FLUSH_DEVICE` reset.
+
+## 9. X683 layout correlation
+
+Known high-confidence relationships:
 
 ```text
 f2fs_sb_info
@@ -157,32 +146,35 @@ f2fs_sb_info
   +0x534 gc_mode (semantic identity: high confidence)
 ```
 
-The candidate selector directly exercises `log_blocks_per_seg`, `blocks_per_seg`, and `segs_per_sec`, while the cursor state is supplied by `sit_info`.
+The candidate selector directly exercises `log_blocks_per_seg`, `blocks_per_seg`, and `segs_per_sec`; the search cursor and mtime range come from the SIT manager.
 
-## 10. What this pass proves vs. does not prove
+## 10. Stock-specific unresolved work
 
-### Strongly anchored
+- Transsion modifications to `select_gc_type()`.
+- Transsion candidate scoring or extra exclusions.
+- Exact X683 `last_victim[]` storage offset.
+- Exact binary width/packing of `gc_mode` at `sbi + 0x534`.
+- Exact X683 `gc_node_segment()` and `gc_data_segment()` revisions.
+- Exact `build_gc_manager()` / `fggc_threshold` implementation.
 
-- `sentry_lock` is a write semaphore in the historical GC wrapper.
-- `DIRTY_I()->seglist_lock` protects victim selection.
-- `DIRTY_I()->victim_secmap` is the BG→FG handoff bitmap.
-- `SIT_I()->last_victim[]` is the search cursor.
-- `GC_GREEDY`/`GC_CB` selection and their cost functions.
-- section-sized LFS search via `segs_per_sec`.
+## Confidence
 
-### Still stock-specific / unresolved
-
-- Any Transsion modification to `select_gc_type()`.
-- Any Transsion change to candidate cost/scoring.
-- Any vendor-specific exclusion predicate not present in the historical code.
-- Exact binary field widths for `gc_mode` at `sbi + 0x534`.
-- Exact X683 `gc_node_segment()` / `gc_data_segment()` body.
-- Whether X683 retained the historical `build_gc_manager()` `fggc_threshold` calculation unchanged.
+| Item | Confidence |
+|---|---|
+| Dirty-manager victim path | High |
+| `seglist_lock` selection boundary | High |
+| BG/FG victim bitmap relationship | High |
+| Greedy/CB cost model | High |
+| Section-aligned scan | High |
+| Three-argument ABI | High |
+| 4.14 mutex lock revision | High |
+| Exact X683 cursor storage | Medium |
+| Transsion scoring delta | Unresolved |
 
 ## Evidence
 
-The 4.15 source directly shows the lock/dispatch boundary, policy selection, cost functions, dirty bitmap scan, BG victim bitmap, `last_victim[]` update, and `cur_victim_sec` assignment. citeturn2view0
+The 4.15 source directly exposes the policy, cost, dirty-bitmap scan and victim handoff machinery. citeturn2view0
 
-The later API-extension patch explicitly shows that the fourth `segno` argument, `init_segno`, and `FLUSH_DEVICE` restoration were added together, providing a clean revision boundary for the X683 three-argument target. citeturn10search6
+The historical API change confirms that the fourth victim-segment parameter and `FLUSH_DEVICE` restoration belong to a later revision. citeturn10search6
 
-The Linux F2FS documentation independently describes greedy selection as minimum valid blocks and cost-benefit selection as combining segment age with valid-block count. citeturn0search0
+The 4.14-era history shows the older three-argument `f2fs_gc()` and the older `mutex_lock(sentry_lock)` form before the rwsem conversion. citeturn11search10turn12search8
