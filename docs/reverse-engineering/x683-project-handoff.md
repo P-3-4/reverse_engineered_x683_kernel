@@ -1,17 +1,22 @@
 # X683 / H694 Kernel Reverse-Engineering — Project Handoff
 
-Canonical continuation state. Work from `main`.
+## Canonical continuation state
+
+Work from `main` in `P-3-4/reverse_engineered_x683_kernel`.
+
+**User preference:** keep explanations minimal; do the actual reverse-engineering work and report concrete results/remaining blockers. Do not claim something is proven when it is only inferred.
 
 ## Binary authority
 
-- boot.img SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
-- boot.img size: `33,554,432`
-- kernel slot: `0x94dad4` / `9,755,348` bytes
-- decompressed Image: `26,615,820` bytes
+- Target: Infinix X683/H694, MT6768 ARM64, stock Android 10, Linux 4.14.141-era kernel.
+- `boot.img` SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
+- `boot.img`: 33,554,432 bytes.
+- Kernel slot: `0x94dad4`, 9,755,348 bytes.
+- Decompressed Image: 26,615,820 bytes.
 - Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
-- trailing bytes after gzip member: `114,696`
-
-The target is the Infinix X683/H694 MT6768 stock-equivalent 4.14.141-era kernel. Reconstructed code is inferred from binary behaviour, not proprietary-source recovery.
+- Gzip trailing bytes: 114,696.
+- Stock binary is authoritative; public 4.14/Transsion sources are references only.
+- Goal: reconstruct functionally equivalent stock behavior, especially the Transsion F2FS GC subsystem, then integrate/build a kernel.
 
 ## Critical F2FS layout / ABI
 
@@ -19,7 +24,11 @@ The target is the Infinix X683/H694 MT6768 stock-equivalent 4.14.141-era kernel.
 sbi + 0x3d8 = log_blocks_per_seg
 sbi + 0x408 = user_block_count
 sbi + 0x4b8 = mount_opt.opt
+sbi + 0x508 = gc_mutex
+sbi + 0x528 = gc_thread
+sbi + 0x530 = cur_victim_sec
 sbi + 0x534 = gc_mode
+sbi + 0x538 = next_victim_seg
 sbi + 0x568 = f2fs_stat_info *
 
 sm + 0x00 = sit_info
@@ -29,18 +38,16 @@ sm + 0x5c = main_segments
 sm + 0x60 = reserved_segments
 ```
 
-Stock entry ABI:
+Stock ABI:
 
 ```c
-int f2fs_gc(struct f2fs_sb_info *sbi,
-            bool sync,
-            bool background,
-            unsigned int segno);
+int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
+            bool background, unsigned int segno);
 ```
 
-Transsion passes `NULL_SEGNO` (`-1`).
+Transsion uses `NULL_SEGNO`.
 
-## Transsion controller
+## Transsion controller/state offsets
 
 ```text
 +0x990  cycle/invocation counter
@@ -62,12 +69,9 @@ Transsion passes `NULL_SEGNO` (`-1`).
 +0xa0c  written/recoverable baseline
 ```
 
-## Pass #1 — threshold helper
+## Reconstructed threshold/helper
 
-`0x37b580..0x37b8c0` reconstructed in:
-
-- `fs/f2fs/tran_gc_threshold_reconstructed.c`
-- `docs/reverse-engineering/gc-threshold-helper-exact-reconstruction.md`
+Source: `fs/f2fs/tran_gc_threshold_reconstructed.c`.
 
 Confirmed:
 
@@ -79,13 +83,12 @@ free_percent  = free_segments * 100 / span;
 fragmentation = 100 - free_percent;
 ```
 
-The policy helper uses:
+Policy constants:
 
 ```text
 small scale table @ Image+0x4d4 = {0x800,0xc00,0x1000,0x1000}
-only when (user_segments >> 15) == 0
+small-table condition: (user_segments >> 15) == 0
 otherwise scale = 0x1800
-
 selector = max(byte @ 0x1a13890, byte @ 0x1a13894)
 factor table @ Image+0x4e4 = {100,100,100,80,80,80,60,60}
 ```
@@ -110,186 +113,120 @@ scaled += (p < 0);
 stop3 = scaled < reference;
 ```
 
-The post-`0x37b74c` range is generic vendor attribute/control machinery, not additional GC arithmetic.
+`0x37b74c+` is generic vendor attribute/control machinery, not additional GC threshold arithmetic.
 
-## Pass #2 — complete thread reconstruction
+## `tran_gc_thread_func` reconstruction
 
-Primary source:
+Primary source: `fs/f2fs/tran_gc_thread_reconstructed.c`.
 
-`fs/f2fs/tran_gc_thread_reconstructed.c`
+Integrated: detector arming/state gate, state-3 timed wait/recheck, metric collection, Stop 1..5, controller transitions, cadence/baseline handling.
 
-Integrated elements:
-
-- detector arming/state gate
-- state-3 timed wait/recheck
-- metric collection from SBI/segment-manager objects
-- Stop 1..5 predicates
-- controller transitions
-- cadence and baseline handling
-
-Directly proven Stop results:
+Direct Stop writes:
 
 ```text
 Stop1 -> +0x9fc = 1
 Stop2 -> +0x9fc = 2
 Stop3 -> +0x9fc = 3
-Stop4 -> +0x998 = 2 (unless +0x9c0 blocks), +0x9f8 = 1
-Stop5 -> +0x998 = 2, +0x9f8 = 2
+Stop4 -> +0x998 = 2 unless +0x9c0 blocks; +0x9f8 = 1
+Stop5 -> +0x998 = 2; +0x9f8 = 2
 ```
 
-State 3 uses a real timed wait path:
+State 3 uses a real timed wait path through `0xce58c`, waitqueue helpers around `0x9c688/0x9c6e8`, then task-state/recheck before metric collection.
+
+**Sanity-audit correction:** do not treat the current thread reconstruction as byte-accurate source. The earlier generic `(timeout_ms + 3) >> 2` `msecs_to_jiffies` approximation was identified as invalid and must not be reintroduced. `0xcc774`, `+0x974`, and controller-object `+0x20` remain vendor/task predicates with unresolved proprietary semantics.
+
+## Transsion GC wrapper
+
+`fs/f2fs/tran_gc_wrapper_reconstructed.c`.
+
+Recovered behavior:
 
 ```text
-+0x9d4 = 3
-→ timeout source / 500-ms fallback
-→ 0xce58c timeout conversion
-→ 0x9c688 wait-entry init
-→ 0x9c6e8 wait setup
-→ task-state/recheck path
-→ 0x377570 metric collection
+controller 0 -> normal f2fs_gc(..., NULL_SEGNO)
+controller 1 -> save gc_mode; set 2; f2fs_gc(..., NULL_SEGNO); restore
+controller 2 -> save gc_mode; set 3; f2fs_gc(..., NULL_SEGNO); restore
 ```
 
-`0xcc774`, `+0x974`, and controller-object `+0x20` remain vendor/task abort predicates whose proprietary semantics are not proven.
+Do not conflate controller values with the underlying `gc_mode` values: controller 1 maps to `gc_mode=2`, controller 2 maps to `gc_mode=3`.
 
-## Pass #3 — Transsion wrapper
+## Stock F2FS GC reconstruction status
 
-New source:
+`fs/f2fs/gc_reconstructed.c` is an inferred reconstruction, **not recovered proprietary source**. It is currently a scaffold and must not be presented as compile-ready or byte-equivalent.
 
-`fs/f2fs/tran_gc_wrapper_reconstructed.c`
+Important sanity correction already applied: historical 4.14 callers own `gc_mutex` around GC; the reconstructed GC function must not unlock it internally.
 
-Recovered wrapper behaviour:
+Historical Android/common 4.14 sources confirm the four-argument `f2fs_gc()` ABI and normal GC flow: checks, BG→FG escalation, victim selection, migration, merged writes, statistics, repeat/checkpoint.
 
-```text
-controller 0
-    → x683_f2fs_gc(..., NULL_SEGNO)
+## Vendor controls
 
-controller 1
-    → save old sbi->gc_mode
-    → sbi->gc_mode = 2 (GREEDY)
-    → f2fs_gc(..., NULL_SEGNO)
-    → restore old mode
-
-controller 2
-    → save old sbi->gc_mode
-    → sbi->gc_mode = 3 (URGENT)
-    → f2fs_gc(..., NULL_SEGNO)
-    → restore old mode
-```
-
-## Pass #4 — historical 4.14 delta
-
-Document:
-
-`docs/reverse-engineering/f2fs-414-vendor-delta.md`
-
-Historical Android/common 4.14 F2FS contains the same four-argument GC ABI and the normal flow:
-
-```text
-GC type selection
-→ mounted/checkpoint checks
-→ BG→FG escalation when needed
-→ victim selection
-→ segment migration
-→ merged-write submission
-→ statistics
-→ repeat/checkpoint
-```
-
-The X683 vendor delta is therefore best modeled as:
-
-```text
-stock F2FS GC core
-+
-Transsion controller
-+
-Transsion static detector
-+
-Stops 1..5
-+
-vendor statistics
-+
-vendor controls/debug registration
-```
-
-The repository's previous `gc_reconstructed.c` had an incorrect `gc_mutex` unlock. It has been corrected: historical callers own `gc_mutex` around the GC call; `x683_f2fs_gc()` no longer unlocks it internally.
-
-Historical source confirms `stat_inc_call_count()` in the standard GC path and the four-argument ABI. cite Android/common 4.14 gc.c / f2fs.h sources searched during this pass.
-
-## Pass #5 — vendor controls
-
-Document:
-
-`docs/reverse-engineering/vendor-control-final-status.md`
-
-Confirmed registrations:
+Known registered descriptors:
 
 ```text
 need_switch_ssr
-    registration 0x37af88
-    descriptor Image+0x173b9d0
+  registration 0x37af88
+  descriptor Image+0x173b9d0
 
 tran_urgent_gc
-    registration 0x37b068
-    descriptor Image+0x173bbb0
+  registration 0x37b068
+  descriptor Image+0x173bbb0
 
 detect_charger_type
-    registration 0x37b184
-    descriptor Image+0x173bf70
+  registration 0x37b184
+  descriptor Image+0x173bf70
 ```
 
-All three use the common runtime registry at `Image+0x1a13a20` and generic registration `0x274ea0 -> 0x274dac`.
+They use common registry `Image+0x1a13a20` and registration path `0x274ea0 -> 0x274dac`.
 
-These are **control/data descriptors**, not proven standalone callback function symbols.
+These are **control/data descriptors**, not proven standalone callback symbols. Do not insert direct calls to those names into the detector without further pointer/data-flow proof.
 
-`tran_gc_usb_wakelock` exists as a string but its separate registration/use path remains unresolved.
-
-Do not invent direct calls to `need_switch_ssr()`, `tran_urgent_gc()`, or `detect_charger_type()` inside the detector; Stop-4 itself directly writes controller 2.
+`tran_gc_usb_wakelock` exists as a string but its separate registration/use path is unresolved.
 
 ## stat_info
 
-Document:
-
-`docs/reverse-engineering/x683-stat-info-reconstruction.md`
-
-Directly confirmed members:
+`sbi + 0x568` points to stat info. Direct updates observed:
 
 ```text
-stat +0x164  incremented
-stat +0x174  incremented
-stat +0x184  accumulated
-stat +0x178  incremented
-stat +0x188  accumulated
-stat +0x18c  incremented
-stat +0x190  incremented
-stat +0x198  accumulated
++0x164 increment
++0x174 increment
++0x184 accumulated
++0x178 increment
++0x188 accumulated
++0x18c increment
++0x190 increment
++0x198 accumulated
 ```
 
-Exact X683 member names are not yet promoted from reconstruction labels. Historical 4.14 `f2fs_stat_info` has analogous call/GC/segment accounting, so role correspondence is plausible but offsets must not be transplanted blindly. cite Android/common 4.14 f2fs.h source.
+Exact X683 member names remain unresolved. Do not blindly transplant historical 4.14 names onto these offsets.
 
-## Source quality status
+## Current honest project status
 
-`tran_gc_threshold_reconstructed.c` no longer contains placeholder null-address global reads. The two selector bytes are explicit parameters because they are vendor-global storage rather than normal F2FS fields.
+Binary-level GC architecture: ~80–85% confidence.
 
-`tran_gc_thread_reconstructed.c` is an integrated reconstruction/scaffold, not a byte-for-byte compilable proprietary replacement. The exact kthread wrapper and unresolved vendor-task predicates remain isolated behind explicit callbacks/inputs instead of guessed names.
+Source reconstruction: materially lower; not yet a buildable replacement.
 
-## Current project state after passes #1–#5
-
-Completed to high confidence:
-
-- threshold/helper reconstruction
-- Stop 1..5 state machine
+High-confidence completed:
+- boot/Image verification
+- critical F2FS layout/ABI mapping
 - controller semantics
-- Transsion wrapper semantics
+- Stop 1–5 direct state writes
+- recovered threshold arithmetic
+- Transsion wrapper behavior
 - stock-vs-vendor architectural separation
-- named vendor-control registration bindings
-- vendor stat_info offset map
+- vendor-control registration bindings
+- stat_info offset map
 
-Still unresolved:
+Remaining high-value gaps:
+1. exact callback/read/write semantics for the three vendor descriptors;
+2. `tran_gc_usb_wakelock` path;
+3. exact semantics of `0xcc774`, `+0x974`, controller-object `+0x20`;
+4. exact stat_info member names;
+5. final byte-accurate kthread scheduler/wakeup wrapper;
+6. full compilation/integration against the correct X683/H694 4.14.141 source base.
 
-1. exact callback/read/write semantics for the three control descriptors;
-2. `tran_gc_usb_wakelock` separate path;
-3. exact proprietary semantics of `0xcc774`, `+0x974`, controller-object `+0x20`;
-4. exact X683 stat_info member names;
-5. final byte-accurate reconstruction of the kthread scheduler/wakeup wrapper.
+## Known sanity-audit commits
 
-These are the only remaining high-value gaps in the current GC-controller reconstruction.
+- `96b4d5916890541b0d39ca31946ee07bfe71869e` — corrected thread scaffold / removed invalid timeout approximation.
+- `c96a942af39a3fc856106475f2a0afa5d8bd9c5c` — audit documentation.
+- `e7da9fa42f29a95a649509b45889a0712da97efd` — source-quality corrections.
+
+Use this file as the canonical continuation point in future chats. Read it from `main` before continuing.
