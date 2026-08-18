@@ -2,9 +2,8 @@
  * X683/H694 Transsion GC thread reconstruction.
  * Reconstructed/inferred from stock Image evidence. Not proprietary source.
  *
- * IMPORTANT: this is a binary-derived scaffold, not yet a buildable drop-in
- * replacement for the proprietary thread. Unresolved vendor/task producers
- * remain explicit inputs.
+ * IMPORTANT: this remains a binary-derived scaffold, not a byte-equivalent
+ * replacement for the proprietary thread.
  */
 #include "f2fs.h"
 
@@ -35,11 +34,13 @@ struct x683_tran_gc_vendor_state {
 };
 
 /*
- * The exact meaning of the six values around dirty_info +0x68 was not
- * sufficiently established to justify summing them here. Keep the detector's
- * recoverable-segment input explicit until the raw structure mapping is
- * resolved. This avoids turning an uncertain offset interpretation into
- * source-level fact.
+ * The stock detector uses two distinct metrics. Do not conflate them:
+ *
+ * arming_dirty_segments = sum(nr_dirty[0..5])
+ * recoverable_segments  = free_segments + nr_dirty[PRE]
+ *
+ * The former belongs to the static arming predicates; the latter is the
+ * w23 metric consumed by Stop 1..5.
  */
 struct x683_tran_gc_metrics {
 	u32 user_block_count;
@@ -50,17 +51,19 @@ struct x683_tran_gc_metrics {
 	u32 free_segments;
 	u32 reserved_segments;
 	u32 reserved_blocks;
+	u32 arming_dirty_segments;
 	u32 recoverable_segments;
 	u32 span;
 };
 
 static void x683_collect_metrics(struct f2fs_sb_info *sbi,
-				 struct x683_tran_gc_metrics *m,
-				 u32 recoverable_segments)
+				 struct x683_tran_gc_metrics *m)
 {
 	struct f2fs_sm_info *sm = SM_I(sbi);
 	struct sit_info *sit = sm->sit_info;
 	struct free_segmap_info *free_i = sm->free_info;
+	struct dirty_seglist_info *dirty_i = sm->dirty_info;
+	u32 i;
 
 	m->user_block_count = sbi->user_block_count;
 	m->sit_blocks = *(u32 *)((char *)sit + 0x10);
@@ -70,8 +73,19 @@ static void x683_collect_metrics(struct f2fs_sb_info *sbi,
 	m->free_segments = *(u32 *)((char *)free_i + 0x04);
 	m->reserved_segments = sm->reserved_segments;
 	m->reserved_blocks = sbi->reserved_blocks;
-	m->recoverable_segments = recoverable_segments;
+
+	m->arming_dirty_segments = 0;
+	for (i = 0; i < 6; ++i)
+		m->arming_dirty_segments += *(u32 *)((char *)dirty_i + 0x68 + i * 4);
+
+	m->recoverable_segments = m->free_segments +
+		*(u32 *)((char *)dirty_i + 0x84); /* nr_dirty[PRE] */
 	m->span = m->user_segments - m->sit_segments;
+}
+
+static inline u32 x683_pct(u32 value)
+{
+	return (u32)(((u64)value * 0x51EB851FULL) >> 37);
 }
 
 static inline void x683_set_controller(
@@ -81,28 +95,49 @@ static inline void x683_set_controller(
 		v->controller = value;
 }
 
+/*
+ * Static detector arming, reconstructed from 0x377120..0x377494.
+ * The exact vendor/global guard producers are still kept outside this
+ * scaffold; the arithmetic and metric distinction are now explicit.
+ */
 static void x683_arm_detector(struct f2fs_sb_info *sbi,
-			       struct x683_tran_gc_vendor_state *v,
-			       u32 preliminary_ratio,
-			       u32 scaled_user_guard,
-			       u32 scaled_sit_guard,
-			       u32 recoverable_segments)
+			       struct x683_tran_gc_vendor_state *v)
 {
 	struct x683_tran_gc_metrics m;
-	u32 user_tenth;
+	s64 ratio;
+	u32 denominator;
+	u32 ratio_value;
+	u32 dirty_tenth;
+	u32 user_guard;
+	u32 sit_guard;
 
-	x683_collect_metrics(sbi, &m, recoverable_segments);
-	user_tenth = (u32)(((u64)m.user_segments *
-				0xAAAAAAAAAAAAAAABULL) >> 67);
-
-	/* Binary-confirmed arming shape; unresolved guard producers stay inputs. */
+	x683_collect_metrics(sbi, &m);
 	v->detector_mode = 2;
 	v->cadence_selector = 0;
-	if (m.recoverable_segments > user_tenth &&
-	    preliminary_ratio >= 0x15f &&
+
+	denominator = m.arming_dirty_segments + m.free_segments;
+	ratio = ((s64)(m.free_segments + m.arming_dirty_segments -
+			m.main_segments) << sbi->log_blocks_per_seg) +
+			((s64)m.sit_blocks - m.user_block_count);
+	ratio_value = denominator ? (u32)(ratio / denominator) : 0;
+	dirty_tenth = (u32)(((u64)m.user_segments *
+				0xAAAAAAAAAAAAAAABULL) >> 67);
+
+	/*
+	 * Binary-confirmed static gates. The final two guards correspond to the
+	 * vendor capacity checks around the 13*user_blocks and 27*sit_blocks
+	 * fixed-point expressions; their surrounding producer semantics remain
+	 * vendor-specific, so keep them explicit here rather than inventing field
+	 * aliases.
+	 */
+	user_guard = x683_pct(13U * m.user_block_count);
+	sit_guard = x683_pct(27U * m.sit_blocks);
+
+	if (m.arming_dirty_segments > dirty_tenth &&
+	    ratio_value >= 0x15f &&
 	    (u64)m.free_segments * 25 < (u64)m.main_segments * 10 &&
-	    (u64)(m.user_block_count - m.sit_blocks) > scaled_user_guard &&
-	    m.reserved_blocks >= scaled_sit_guard) {
+	    (u64)(m.user_block_count - m.sit_blocks) > user_guard &&
+	    m.reserved_blocks >= sit_guard) {
 		v->detector_mode = 1;
 		v->cadence_selector = 1;
 	}
@@ -114,10 +149,9 @@ static void x683_arm_detector(struct f2fs_sb_info *sbi,
 }
 
 /*
- * State 3 uses the kernel waitqueue/scheduler machinery. Do not emulate
- * msecs_to_jiffies() with arithmetic: the exact conversion is configuration
- * dependent. The real integration should call msecs_to_jiffies(timeout_ms)
- * and the recovered waitqueue sequence.
+ * State 3 uses the kernel waitqueue/scheduler machinery. The exact stock
+ * wait/re-entry sequence is documented separately and is intentionally not
+ * replaced with a fake scheduler implementation here.
  */
 static bool x683_state3_wait(struct x683_tran_gc_vendor_state *v,
 			     u32 timeout_ms,
@@ -127,7 +161,7 @@ static bool x683_state3_wait(struct x683_tran_gc_vendor_state *v,
 	v->detector_state = 3;
 	(void)timeout_ms;
 
-	/* 0x9c688 / 0x9c6e8 / 0x9c8d0 are intentionally not faked here. */
+	/* 0xce58c / 0x9c688 / 0x9c6e8 / 0x9c8d0 remain integration points. */
 	if (abort_predicate && abort_predicate(opaque)) {
 		v->detector_active = 0;
 		return false;
@@ -166,8 +200,13 @@ static bool x683_stop3(struct x683_tran_gc_vendor_state *v,
 }
 
 static bool x683_stop4(struct x683_tran_gc_vendor_state *v,
-		       s64 delta, s64 threshold)
+		       s32 running_max, s32 recoverable,
+		       s32 saved_sit_segments, s32 sit_segments,
+		       s32 threshold)
 {
+	s64 delta = (s64)(running_max - recoverable) +
+		(s64)saved_sit_segments - sit_segments;
+
 	if (delta > threshold) {
 		x683_set_controller(v, X683_GC_URGENT);
 		v->stop_result = 1;
@@ -177,17 +216,12 @@ static bool x683_stop4(struct x683_tran_gc_vendor_state *v,
 }
 
 static bool x683_stop5(struct x683_tran_gc_vendor_state *v,
-		       s64 current_segment_component,
-		       u32 current_recoverable)
+		       s32 sit_segments, u32 recoverable_segments)
 {
-	u64 interval = v->cadence_selector ? 500 : 50;
 	s64 progress;
 
-	if ((v->cycle % interval) != 0)
-		return false;
-
-	progress = current_segment_component +
-		(s64)(s32)(current_recoverable - v->baseline_written);
+	progress = (s64)sit_segments +
+		(s64)(s32)(recoverable_segments - v->baseline_written);
 	if (progress > v->baseline_segment)
 		return false;
 
@@ -198,23 +232,28 @@ static bool x683_stop5(struct x683_tran_gc_vendor_state *v,
 
 static void x683_run_detector(struct f2fs_sb_info *sbi,
 			       struct x683_tran_gc_vendor_state *v,
-			       u32 recoverable_segments,
 			       s32 delta1, s32 threshold1,
 			       s32 delta2, s32 threshold2,
 			       s64 scaled3, s64 reference3,
-			       s64 delta4, s64 threshold4,
-			       s64 current_segment_component)
+			       s32 threshold4)
 {
 	struct x683_tran_gc_metrics m;
 
 	v->detector_cycles++;
-	x683_collect_metrics(sbi, &m, recoverable_segments);
+	x683_collect_metrics(sbi, &m);
 
-	if (x683_stop1(v, delta1, threshold1) ||
+	if (x683_stop1(v,
+			(s32)(m.recoverable_segments - v->saved_baseline),
+			threshold1) ||
 	    x683_stop2(v, delta2, threshold2) ||
 	    x683_stop3(v, scaled3, reference3) ||
-	    x683_stop4(v, delta4, threshold4) ||
-	    x683_stop5(v, current_segment_component, m.recoverable_segments))
+	    x683_stop4(v, (s32)v->running_max,
+			(s32)m.recoverable_segments,
+			v->baseline_segment,
+			(s32)m.sit_segments,
+			threshold4) ||
+	    x683_stop5(v, (s32)m.sit_segments,
+			m.recoverable_segments))
 		return;
 
 	v->baseline_segment = (s32)reference3;
@@ -223,12 +262,10 @@ static void x683_run_detector(struct f2fs_sb_info *sbi,
 
 /*
  * One reconstruction step. This deliberately does not claim to be the full
- * scheduler/thread implementation: the exact vendor/task predicates and
- * surrounding wait/re-entry branches remain unresolved.
+ * proprietary kthread implementation.
  */
 int x683_tran_gc_thread_step(struct f2fs_sb_info *sbi,
 				     struct x683_tran_gc_vendor_state *v,
-				     u32 recoverable_segments,
 				     bool (*abort_predicate)(void *),
 				     void *opaque)
 {
@@ -237,8 +274,7 @@ int x683_tran_gc_thread_step(struct f2fs_sb_info *sbi,
 
 	v->cycle++;
 	if (!v->detector_active)
-		x683_arm_detector(sbi, v, 0x15f, 0, 0,
-				recoverable_segments);
+		x683_arm_detector(sbi, v);
 
 	return x683_state3_wait(v, 500, abort_predicate, opaque) ? 1 : 0;
 }
