@@ -8,82 +8,116 @@ Source authority: stock X683/H694 Image/disassembly.
 sbi + 0x568 -> struct f2fs_stat_info *
 ```
 
-## Directly established members
-
-The GC core loads the pointer from `sbi + 0x568` into `x8`, then accesses these fields directly.
+## Directly established GC counters
 
 ```text
-stat +0x164  GC call-count candidate; incremented once per GC call
-stat +0x18c  total GC segment count
-stat +0x190  per-type GC segment count A
-stat +0x194  per-type GC segment count B
-stat +0x198  background-GC counterpart to type A
-stat +0x19c  background-GC counterpart to type B
-stat +0x1a0  copy of sbi +0x540 skipped-atomic counter
-stat +0x1a8  copy of sbi +0x548 skipped-atomic counter
-stat +0x1b0..0x1c4  six dirty-info-derived counters
-stat +0x1c8..0x1f4  normalized/derived dirty statistics
-stat +0x1f8..0x218  contiguous SBI-statistics copies
+stat +0x164  call_count: incremented once per GC call
+stat +0x18c  tot_segs
+stat +0x190  data_segs
+stat +0x194  node_segs
+stat +0x198  bg_data_segs
+stat +0x19c  bg_node_segs
 ```
 
-## Exact arithmetic at the segment-accounting sites
+### Exact DATA branch
+
+At `0x3521dc..0x352208` the binary performs:
+
+```c
+stat->tot_segs++;
+stat->data_segs++;
+stat->bg_data_segs += local_bg_gc_flag;
+```
+
+This branch is reached for segment types `0,1,2` (`w23 <= 2`), which are the DATA segment types in the target F2FS layout.
+
+### Exact NODE branch
 
 At `0x350c1c..0x350c58` the binary performs:
 
 ```c
-stat->field_18c++;
-stat->field_194++;
-stat->field_19c += local_gc_type_increment;
+stat->tot_segs++;
+stat->node_segs++;
+stat->bg_node_segs += local_bg_gc_flag;
 ```
 
-A parallel type branch at `0x3521dc..0x352208` performs:
+This branch is reached for segment types `3,4,5` (`w23 > 2`), which are the NODE segment types.
+
+Therefore the X683 mapping is now exact:
+
+```text
++0x18c = tot_segs
++0x190 = data_segs
++0x194 = node_segs
++0x198 = bg_data_segs
++0x19c = bg_node_segs
+```
+
+The mapping matches the historical Android/common 4.14 `stat_inc_seg_count()` shape, but the X683 offsets are established independently from stock machine code. citeturn629759search0
+
+### Exact call-count
+
+At `0x35278c..0x352798`:
 
 ```c
-stat->field_18c++;
-stat->field_190++;
-stat->field_198 += local_gc_type_increment;
+stat->call_count++;
 ```
 
-Therefore `0x18c` is the common total-segment counter, while `0x190/0x194` are the two mutually exclusive segment-type counters and `0x198/0x19c` are their background counters.
+So `+0x164` is the X683 GC call-count field by direct behavior, not merely a candidate.
 
-The exact DATA/NODE assignment of the A/B pair remains unresolved from the currently extracted snippets; it must be assigned only after the branch predicate immediately selecting each block is matched to `SUM_TYPE_DATA`/`SUM_TYPE_NODE` in the stock flow.
+## GC block/data statistics: still being separated from segment counters
 
-## Historical correspondence
+The earlier `+0x170/+0x174/+0x178/+0x184/+0x188` accesses are a **different counter family** from `+0x18c..+0x19c`.
 
-Android/common 4.14 defines `stat_inc_seg_count()` in the following shape:
+Observed shape:
 
-```c
-si->tot_segs++;
-if (type == SUM_TYPE_DATA) {
-    si->data_segs++;
-    si->bg_data_segs += (gc_type == BG_GC) ? 1 : 0;
-} else {
-    si->node_segs++;
-    si->bg_node_segs += (gc_type == BG_GC) ? 1 : 0;
-}
+```text
++0x170  increment once in the shared segment-accounting path
++0x174  increment in NODE path; +0x184 accumulates a local 0/1-like value
++0x178  increment in DATA path; +0x188 accumulates the same local value
 ```
 
-That macro shape matches the X683 access pattern exactly, but historical field ordering is used only as a correspondence aid; X683 offsets remain binary-defined. citeturn629759search0
+Do not currently rename these as `tot_blks/data_blks/node_blks`; the increments are segment-level and therefore do not match the ordinary `stat_inc_*_blk_count()` macros directly.
 
-The historical header also defines `stat_inc_call_count(si)` as the `call_count++` operation, matching the X683 increment at `stat + 0x164` in role. citeturn629759search9
+The most plausible remaining historical family is a vendor/GC-specific **GC section/call counter set**, but the exact X683 symbolic names require the surrounding branch/counter data-flow to be resolved.
+
+## Other known stat offsets
+
+```text
+stat +0x1a0  corresponds to a counter copied/derived from sbi +0x540
+stat +0x1a8  corresponds to a counter copied/derived from sbi +0x548
+stat +0x1b0..0x1c4  six dirty-info-derived counters
+stat +0x1c8..0x1f4  normalized/derived dirty statistics
+stat +0x1f8..0x218  contiguous SBI-statistics copies/derived values
+```
+
+Exact widths and semantic names of this secondary region are not yet proven.
+
+## `sp + 0x118` caveat
+
+This stack slot is compiler-reused. It is a task/reference pointer earlier in the function and is later overwritten before the terminal GC-list cleanup path. Therefore the value used as the addend for `+0x184/+0x188` must be named from its local data-flow, not from the stack slot itself.
+
+The addend is consistent with the historical background-GC increment shape, but its final producer should be treated as a separate data-flow target until traced to its source assignment.
 
 ## Safe reconstruction
 
-Until the remaining branch predicate is resolved, use:
-
 ```c
 struct x683_stat_info {
-    /* ... unresolved prefix ... */
-    u32 call_count;            /* +0x164, high-confidence role */
+    /* unresolved vendor-specific prefix */
+    u32 call_count;      /* +0x164 */
+    /* unresolved fields */
+    u32 gc_counter_170;  /* +0x170, name unresolved */
+    u32 gc_node_counter; /* +0x174 */
+    u32 gc_data_counter; /* +0x178 */
+    u32 gc_node_bg_acc;  /* +0x184 */
+    u32 gc_data_bg_acc;  /* +0x188 */
     /* ... */
-    u32 tot_segs;              /* +0x18c */
-    u32 seg_type_a;            /* +0x190 */
-    u32 seg_type_b;            /* +0x194 */
-    u32 bg_seg_type_a;         /* +0x198 */
-    u32 bg_seg_type_b;         /* +0x19c */
-    u64 skipped_atomic0;       /* +0x1a0, source width to be validated */
-    u64 skipped_atomic1;       /* +0x1a8, source width to be validated */
+    u32 tot_segs;        /* +0x18c */
+    u32 data_segs;       /* +0x190 */
+    u32 node_segs;       /* +0x194 */
+    u32 bg_data_segs;    /* +0x198 */
+    u32 bg_node_segs;    /* +0x19c */
 };
 ```
 
-Do not rename `seg_type_a/b` to DATA/NODE yet.
+`gc_node_counter/gc_data_counter` are intentionally descriptive placeholders, not claims of original member names.
