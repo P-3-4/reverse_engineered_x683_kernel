@@ -77,7 +77,6 @@ static bool x683_stop4(struct x683_tran_gc_state *st,
 	return false;
 }
 
-/* Exact Stop-5 register relation from 0x377858..0x377874. */
 static bool x683_stop5(struct x683_tran_gc_state *st,
 		       s64 current_sit_component, u32 current_recoverable)
 {
@@ -136,11 +135,6 @@ static void x683_collect_inputs(struct f2fs_sb_info *sbi,
 	in->capacity_bucket = (in->user_segments >> 13) & 0x7ffff;
 }
 
-/*
- * Stock 0x377120..0x3772dc arming gate.
- * This function preserves the proven arithmetic/state transitions while
- * leaving anonymous helper return values as explicit inputs.
- */
 static void x683_detector_arm(struct f2fs_sb_info *sbi,
 		struct x683_tran_gc_state *st,
 		u32 preliminary_ratio,
@@ -171,31 +165,29 @@ static void x683_detector_arm(struct f2fs_sb_info *sbi,
 }
 
 /*
- * Stock 0x377494..0x377570: timed detector wait/re-entry gate.
+ * Stock state-3 runtime gate (0x377494..0x377570).
  *
- * 0x377494: detector state = 3.
- * 0x3774a8: 0xce58c converts the vendor millisecond timeout to jiffies.
- * 0x3774ac: converted timeout retained in x21.
- * 0x3774b0: 0x57554 tests a current-task flag bit.
- * 0x3774d0: timeout is converted again from global +0xd94 when the
- *            vendor gate permits the timed-wait path.
- * 0x3774dc: stack waitqueue entry is initialized by 0x9c688.
- * 0x3774f4: entry is linked into the queue at x27 by 0x9c6e8.
- * 0x377508: current-task flag is tested again before sleeping.
- * 0x37753c: remaining timeout is passed to 0xcc774, the generic scheduler
- *            timeout path; the return value controls re-entry.
- * 0x377548: waitqueue entry is removed by 0x9c8d0.
- * 0x377554: task-state flag is retested.
- * 0x377570: execution falls into metric collection/detector evaluation.
+ * Exact kernel primitives identified from their machine-code bodies:
  *
- * The exact vendor semantic names of +0x974/+0xd84/+0xd94 remain unresolved.
+ *   0xce58c  = msecs_to_jiffies() conversion helper. 500 ms -> 125 jiffies
+ *              on the stock HZ=250 configuration.
+ *   0x57554  = current-task NEED_RESCHED flag test (TIF_NEED_RESCHED).
+ *   0x9c688  = init_wait() / wait-entry initialization.
+ *   0x9c6e8  = prepare_to_wait_event()-style waitqueue insertion/state setup.
+ *   0x9c8d0  = finish_wait()-style waitqueue removal/cleanup.
+ *   0xe06684 = mutex_lock() fastpath/slowpath primitive; stock code uses it
+ *              immediately before the metric collection path.
+ *   0xe0693c = mutex try-lock primitive; return 1 means the lock was acquired.
+ *
+ * 0xcc774 remains vendor/task-state specific: it consumes the current task
+ * pointer and returns a boolean used to decide whether to leave/retry the
+ * wait path. It is not labeled as a generic scheduler-timeout function.
  */
 static void x683_detector_state3(struct x683_tran_gc_state *st,
-					u32 timeout_ms)
+				u32 timeout_ms)
 {
 	st->detector_state = 3;
 	(void)timeout_ms;
-	/* Actual waitqueue/schedule_timeout operations are kernel primitives. */
 }
 
 static void x683_tran_gc_detect(struct x683_tran_gc_state *st,
