@@ -1,7 +1,7 @@
 /*
  * X683/H694 F2FS GC reconstruction.
  * Reconstructed/inferred code, not recovered proprietary source.
- * Target ABI: 4.14-era f2fs_gc(sbi, sync, background).
+ * Target ABI: stock X683 f2fs_gc(sbi, sync, background, segno).
  */
 
 #include "f2fs.h"
@@ -83,9 +83,14 @@ next:
 	return (gc_type == FG_GC && seg_freed == sbi->segs_per_sec);
 }
 
-int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background)
+/*
+ * Stock X683 entry ABI has a fourth segment argument. The vendor wrapper
+ * passes NULL_SEGNO (-1), which means normal victim selection.
+ */
+int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
+		unsigned int requested_segno)
 {
-	unsigned int segno = NULL_SEGNO;
+	unsigned int segno = requested_segno;
 	int gc_type = sync ? FG_GC : BG_GC;
 	int sec_freed = 0;
 	int ret = -EINVAL;
@@ -117,7 +122,7 @@ gc_more:
 
 	if (gc_type == BG_GC && !background)
 		goto stop;
-	if (!x683_get_victim(sbi, &segno, gc_type))
+	if (segno == NULL_SEGNO && !x683_get_victim(sbi, &segno, gc_type))
 		goto stop;
 
 	if (x683_do_garbage_collect(sbi, segno, &gc_list, gc_type) &&
