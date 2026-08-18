@@ -16,7 +16,16 @@ The Transsion GC path calls the stock `f2fs_gc()` and `f2fs_balance_fs_bg()` and
 
 ## Current layout reconstruction
 
-High-confidence `f2fs_sb_info` offsets are documented in `f2fs-layout.md`. The remaining unresolved work is concentrated around the exact GC state machine and dirty-segment accesses.
+High-confidence `f2fs_sb_info` offsets are documented in `f2fs-layout.md`. `sbi + 0x534` is now treated as internal `gc_mode`, not the older 4.14 `fggc_threshold` field. The victim-selection reconstruction also now uses the historical type-sensitive greedy cost model.
+
+## Current GC reconstruction state
+
+- 3-argument `f2fs_gc(sbi, sync, background)`: high confidence.
+- `__get_victim()` manager boundary: high confidence.
+- Dirty-segment victim selection and `last_victim[]`: high confidence at historical-implementation level.
+- `gc_mode` at `0x534`: high confidence.
+- Historical `fggc_threshold` / `no_fggc_candidate()`: reference-only; exact X683 retention is unresolved.
+- Exact Transsion GC-state transitions: unresolved and now the primary target.
 
 ## Build strategy
 
