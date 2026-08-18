@@ -4,7 +4,8 @@
  * Reconstructed/inferred directly from stock boot.img AArch64 evidence.
  * NOT recovered proprietary Transsion source.
  *
- * This revision pins the register producers used by the Stop-1..5 detector.
+ * This revision pins the register producers used by the Stop-1..5 detector
+ * and the detector arming/state transitions at 0x377120..0x377494.
  */
 
 #include "f2fs.h"
@@ -14,36 +15,103 @@
 #define TRAN_GC_CTRL_URGENT 2
 
 struct x683_tran_gc_state {
-	u64 cycle;                    /* +0x990 */
-	u32 controller;               /* +0x998 */
-	u8 controller_write_blocked;  /* +0x9c0 */
-	u32 loop_state;               /* +0x9d0 */
-	u32 detector_state;           /* +0x9d4 */
-	u64 repeated_detector_count; /* +0x9d8 */
-	u64 detector_cycles;          /* +0x9e0 */
-	u32 running_max;              /* +0x9f0 */
-	u32 saved_baseline;           /* +0x9f4 */
-	u8 stop_result;               /* +0x9f8 */
-	u32 stop_condition;           /* +0x9fc */
-	u8 cadence_selector;          /* +0xa04 */
-	u8 loop_active;               /* +0xa05 */
-	u8 detector_enabled;          /* +0xa06 */
-	s32 baseline_seg;              /* +0xa08 */
-	u32 baseline_written_seg;      /* +0xa0c */
+	u64 cycle;
+	u32 controller;
+	u8  controller_write_blocked;
+	u32 loop_state;
+	u32 detector_state;
+	u64 repeated_detector_count;
+	u64 detector_cycles;
+	u32 running_max;
+	u32 saved_baseline;
+	u8  stop_result;
+	u32 stop_condition;
+	u8  cadence_selector;
+	u8  loop_active;
+	u8  detector_enabled;
+	s32 baseline_seg;
+	u32 baseline_written_seg;
 };
 
+static void x683_set_controller(struct x683_tran_gc_state *st, u32 value)
+{
+	if (!st->controller_write_blocked)
+		st->controller = value;
+}
+
+static bool x683_stop1(struct x683_tran_gc_state *st,
+		       s32 delta_seg, s32 threshold)
+{
+	if (delta_seg > threshold) {
+		st->stop_condition = 1;
+		return true;
+	}
+	return false;
+}
+
+static bool x683_stop2(struct x683_tran_gc_state *st,
+		       s32 delta, s32 threshold)
+{
+	if (delta > threshold) {
+		st->stop_condition = 2;
+		return true;
+	}
+	return false;
+}
+
+static bool x683_stop3(struct x683_tran_gc_state *st,
+		       s64 scaled_movement, s64 segment_reference)
+{
+	if (scaled_movement < segment_reference) {
+		st->stop_condition = 3;
+		return true;
+	}
+	return false;
+}
+
+static bool x683_stop4(struct x683_tran_gc_state *st,
+		       s64 delta, s64 threshold)
+{
+	if (delta > threshold) {
+		x683_set_controller(st, TRAN_GC_CTRL_URGENT);
+		st->stop_result = 1;
+		return true;
+	}
+	return false;
+}
+
+/* Exact Stop-5 register relation from 0x377858..0x377874. */
+static bool x683_stop5(struct x683_tran_gc_state *st,
+		       s64 current_sit_component, u32 current_recoverable)
+{
+	u64 interval = st->cadence_selector ? 500 : 50;
+	s64 progress;
+
+	if ((st->cycle % interval) != 0)
+		return false;
+
+	progress = current_sit_component +
+		(s64)(s32)(current_recoverable - st->baseline_written_seg);
+
+	if (progress > st->baseline_seg)
+		return false;
+
+	x683_set_controller(st, TRAN_GC_CTRL_URGENT);
+	st->stop_result = 2;
+	return true;
+}
+
 struct x683_tran_gc_inputs {
-	u32 user_block_count;       /* sbi + 0x408 */
-	u32 log_blocks_per_seg;     /* sbi + 0x3d8 */
-	u32 main_segments;          /* sm_info + 0x5c */
-	u32 reserved_segments;      /* sm_info + 0x60 */
-	u32 sit_blocks;              /* SIT_I(sbi) + 0x10 */
-	u32 free_segments;           /* FREE_I(sbi) + 0x04 */
-	u32 prefree_segments;        /* DIRTY_I(sbi) + 0x84 */
-	u32 dirty_type_sum;          /* DIRTY_I(sbi) + 0x68..0x7c */
-	u32 user_segments;           /* user_block_count >> log_blocks_per_seg */
-	u32 sit_segments;            /* sit_blocks >> log_blocks_per_seg */
-	u32 capacity_bucket;         /* (user_segments >> 13) & 0x7ffff */
+	u32 user_block_count;
+	u32 log_blocks_per_seg;
+	u32 main_segments;
+	u32 reserved_segments;
+	u32 sit_blocks;
+	u32 free_segments;
+	u32 recoverable_segments;
+	u32 user_segments;
+	u32 sit_segments;
+	u32 capacity_bucket;
 };
 
 static void x683_collect_inputs(struct f2fs_sb_info *sbi,
@@ -62,195 +130,77 @@ static void x683_collect_inputs(struct f2fs_sb_info *sbi,
 	in->sit_blocks = *(u32 *)((char *)sit + 0x10);
 	in->free_segments = free_i->free_segments;
 
-	in->dirty_type_sum = 0;
+	in->recoverable_segments = 0;
 	for (i = 0; i < 6; i++)
-		in->dirty_type_sum += *(u32 *)((char *)dirty_i + 0x68 + i * 4);
+		in->recoverable_segments += *(u32 *)((char *)dirty_i + 0x68 + i * 4);
 
-	in->prefree_segments = *(u32 *)((char *)dirty_i + 0x84);
 	in->user_segments = in->user_block_count >> in->log_blocks_per_seg;
 	in->sit_segments = in->sit_blocks >> in->log_blocks_per_seg;
 	in->capacity_bucket = (in->user_segments >> 13) & 0x7ffff;
 }
 
 /*
- * Direct stock mapping around 0x3775d4:
- *
- *   x25 = user_segments
- *   x20 = sit_segments
- *   x21 = capacity_bucket initially, then a selected threshold base
- *   w23 = free_segments + prefree_segments
+ * Stock 0x377120..0x3772dc arming gate.
+ * This function preserves the proven arithmetic/state transitions while
+ * leaving anonymous helper return values as explicit inputs.
  */
-static void x683_prepare_detector_values(const struct x683_tran_gc_inputs *in,
-		u32 *threshold_base, u32 *threshold_scale,
-		u32 *recoverable_segments)
+static void x683_detector_arm(struct f2fs_sb_info *sbi,
+		struct x683_tran_gc_state *st,
+		u32 preliminary_ratio,
+		u32 scaled_user_guard,
+		u32 scaled_sit_guard)
 {
-	u32 base;
-	u32 scale;
+	struct x683_tran_gc_inputs in;
+	u64 user_tenth;
+	u32 mode;
 
-	switch (in->capacity_bucket) {
-	case 0:
-		base = 0x800;
-		scale = 2 * 512;
-		break;
-	case 1:
-		base = 0xc00;
-		scale = 3 * 512;
-		break;
-	case 2:
-	case 3:
-		base = 0x1000;
-		scale = 2 * 512;
-		break;
-	default:
-		base = 0x1800;
-		scale = 4 * 512;
-		break;
+	x683_collect_inputs(sbi, &in);
+	user_tenth = ((u64)in.user_segments * 0xAAAAAAAAAAAAAAABULL) >> 67;
+
+	mode = 2;
+
+	if (in.recoverable_segments > user_tenth &&
+	    preliminary_ratio >= 0x15f &&
+	    in.free_segments * 25 < in.main_segments * 10 &&
+	    (in.user_block_count - in.sit_blocks) > scaled_user_guard &&
+	    sbi->reserved_blocks >= scaled_sit_guard) {
+		mode = 1;
+		st->cadence_selector = 1;
 	}
 
-	*threshold_base = base;
-	*threshold_scale = scale;
-	*recoverable_segments = in->free_segments + in->prefree_segments;
+	/* Stock writes +0xa00 = mode. */
+	st->loop_state = mode;
+	st->detector_state = 2;
+	st->detector_enabled = 1;
 }
 
 /*
- * Stop 1, exact register-level predicate at 0x3776a4..0x377724:
- *
- *   delta1 = recoverable_segments - controller->saved_baseline (+0x9f4)
- *   factor = table[capacity_bucket], table @ image +0x10a64e4
- *   threshold1 = factor * selected_scale * 0x51EB851F / 2^37
- *
- * table[0..7] = {100,100,100,80,80,80,60,60}
+ * One detector iteration. Operand production is now separated from the
+ * state machine so the stock register relationships remain visible.
  */
-static bool x683_stop1(struct x683_tran_gc_state *st,
-			const struct x683_tran_gc_inputs *in,
-			u32 selected_scale)
+static void x683_tran_gc_detect(struct x683_tran_gc_state *st,
+				s32 delta1, s32 threshold1,
+				s32 delta2, s32 threshold2,
+				s64 movement, s64 reference,
+				s64 ssr_delta, s64 ssr_threshold,
+				s64 current_sit_component,
+				u32 current_recoverable)
 {
-	static const u32 factor[8] = {100, 100, 100, 80, 80, 80, 60, 60};
-	u32 idx = in->capacity_bucket;
-	u32 delta;
-	u64 threshold;
+	st->detector_cycles++;
 
-	if (idx > 7)
-		return false;
+	if (x683_stop1(st, delta1, threshold1) ||
+	    x683_stop2(st, delta2, threshold2) ||
+	    x683_stop3(st, movement, reference) ||
+	    x683_stop4(st, ssr_delta, ssr_threshold) ||
+	    x683_stop5(st, current_sit_component, current_recoverable))
+		return;
 
-	delta = in->free_segments + in->prefree_segments - st->saved_baseline;
-	threshold = (u64)factor[idx] * selected_scale * 0x51EB851FULL;
-	threshold >>= 37;
-
-	if ((s32)delta > (s32)threshold) {
-		st->stop_condition = 1;
-		return true;
-	}
-	return false;
+	st->baseline_seg = reference;
+	st->baseline_written_seg = current_recoverable;
 }
 
-/*
- * Stop 2, exact predicate at 0x377728..0x377770:
- *
- *   delta2 = recoverable_segments - sbi->sm_info->reserved_segments
- *   threshold2 = factor[bucket] * threshold_base * 0x51EB851F / 2^37
- *
- * The multiply is unsigned in stock code.
- */
-static bool x683_stop2(struct x683_tran_gc_state *st,
-			const struct x683_tran_gc_inputs *in,
-			u32 threshold_base)
+/* Stock 0x377494 transition: detector state 3. */
+static void x683_detector_state3(struct x683_tran_gc_state *st)
 {
-	static const u32 factor[8] = {100, 100, 100, 80, 80, 80, 60, 60};
-	u32 idx = in->capacity_bucket;
-	u32 delta;
-	u64 threshold;
-
-	if (idx > 7)
-		return false;
-
-	delta = in->free_segments + in->prefree_segments - in->reserved_segments;
-	threshold = (u64)factor[idx] * threshold_base * 0x51EB851FULL;
-	threshold >>= 37;
-
-	if ((s32)delta > (s32)threshold) {
-		st->stop_condition = 2;
-		return true;
-	}
-	return false;
-}
-
-/*
- * Stop 3, exact arithmetic shape at 0x37777c..0x3777d0.
- *
- *   x = table64[bucket] * (user_segments - sit_segments)
- *   scaled = signed_fixed_point(x, 0xA3D70A3D70A3D70B, >>6)
- *   compare scaled < (recoverable_segments - reserved_segments)
- *
- * table64[0..7] = {80,80,80,70,70,70,60,60}
- */
-static bool x683_stop3(struct x683_tran_gc_state *st,
-			const struct x683_tran_gc_inputs *in)
-{
-	static const u64 factor[8] = {80, 80, 80, 70, 70, 70, 60, 60};
-	static const s64 magic = (s64)0xA3D70A3D70A3D70BULL;
-	u32 idx = in->capacity_bucket;
-	s64 span;
-	s64 prod;
-	s64 high;
-	s64 scaled;
-	s64 reference;
-
-	if (idx > 7)
-		return false;
-
-	span = (s64)(u64)(in->user_segments - in->sit_segments);
-	prod = (s64)factor[idx] * span;
-	high = (s64)((__int128)prod * magic >> 64);
-	scaled = (high + prod) >> 6;
-	scaled += (prod < 0);
-	reference = (s64)(s32)((in->free_segments + in->prefree_segments) -
-			in->reserved_segments);
-
-	if (scaled < reference) {
-		st->stop_condition = 3;
-		return true;
-	}
-	return false;
-}
-
-/* Stop 4 remains the proven SSR trigger. */
-static bool x683_stop4(struct x683_tran_gc_state *st,
-			s64 delta, s64 threshold)
-{
-	if (delta > threshold) {
-		if (!st->controller_write_blocked)
-			st->controller = TRAN_GC_CTRL_URGENT;
-		st->stop_result = 1;
-		return true;
-	}
-	return false;
-}
-
-/*
- * Stop 5 exact predicate from 0x377830..0x377878.
- * The current component x20 is the SIT-segment baseline; w23 is the
- * recoverable-segment count (free + prefree).
- */
-static bool x683_stop5(struct x683_tran_gc_state *st,
-			s64 current_sit_segments,
-			u32 current_recoverable)
-{
-	u64 interval = st->cadence_selector ? 500 : 50;
-	s64 progress;
-	s64 baseline = st->baseline_seg;
-
-	if ((st->cycle % interval) != 0)
-		return false;
-
-	progress = current_sit_segments +
-		(s64)(s32)(current_recoverable - st->baseline_written_seg);
-
-	if (progress > baseline)
-		return false;
-
-	if (!st->controller_write_blocked)
-		st->controller = TRAN_GC_CTRL_URGENT;
-	st->stop_result = 2;
-	return true;
+	st->detector_state = 3;
 }
