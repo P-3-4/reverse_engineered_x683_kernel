@@ -1,41 +1,37 @@
 # X683 / H694 Kernel Reverse-Engineering — Project Handoff
 
-## Canonical continuation state
-
 Work from `main` in `P-3-4/reverse_engineered_x683_kernel`.
-
-**User preference:** keep explanations minimal; do the actual reverse-engineering work and report concrete results/remaining blockers. Do not claim something is proven when it is only inferred.
 
 ## Binary authority
 
 - Target: Infinix X683/H694, MT6768 ARM64, stock Android 10, Linux 4.14.141-era kernel.
 - `boot.img` SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
 - `boot.img`: 33,554,432 bytes.
-- Kernel compressed size: `0x94dad4` bytes at boot image offset `0x800`.
-- Decompressed Image: 26,615,820 bytes.
-- Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
-- Gzip trailing bytes: 114,696.
-- Stock binary is authoritative; public 4.14/Transsion sources are references only.
-- Goal: reconstruct functionally equivalent stock behavior, especially the Transsion F2FS GC subsystem, then integrate/build a kernel.
+- Kernel: gzip at boot `0x800`, compressed size `9,755,348` bytes; decompressed Image size `26,615,820`.
+- Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`.
+- Gzip trailing bytes: `114,696`.
+- Stock binary is authoritative. Public 4.14/Android sources are references.
 
 ## Critical F2FS layout / ABI
 
 ```text
-sbi + 0x3d8 = log_blocks_per_seg
-sbi + 0x408 = user_block_count
-sbi + 0x4b8 = mount_opt.opt
-sbi + 0x508 = gc_mutex
-sbi + 0x528 = gc_thread
-sbi + 0x530 = cur_victim_sec
-sbi + 0x534 = gc_mode
-sbi + 0x538 = next_victim_seg
-sbi + 0x568 = f2fs_stat_info *
+sbi +0x3d8  log_blocks_per_seg
+sbi +0x3dc  blocks_per_seg
+sbi +0x3e0  segs_per_sec
+sbi +0x408  user_block_count
+sbi +0x4b8  mount_opt.opt
+sbi +0x508  gc_mutex
+sbi +0x528  gc_thread
+sbi +0x530  cur_victim_sec
+sbi +0x534  gc_mode
+sbi +0x538  next_victim_seg
+sbi +0x568  f2fs_stat_info *
 
-sm + 0x00 = sit_info
-sm + 0x08 = free_info
-sm + 0x10 = dirty_info
-sm + 0x5c = main_segments
-sm + 0x60 = reserved_segments
+sm +0x00  sit_info
+sm +0x08  free_info
+sm +0x10  dirty_info
+sm +0x5c  main_segments
+sm +0x60  reserved_segments
 ```
 
 Stock ABI:
@@ -45,374 +41,314 @@ int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
             bool background, unsigned int segno);
 ```
 
-Transsion uses `NULL_SEGNO`.
+## Exact Transsion controller wrapper
 
-## Transsion controller/state offsets
-
-```text
-+0x990  cycle/invocation counter
-+0x998  controller: 0 normal / 1 URGENT / 2 GREEDY
-+0x9c0  controller-write guard
-+0x9d0  loop/termination state
-+0x9d4  detector state
-+0x9d8  repeated-detector counter
-+0x9e0  detector-cycle counter
-+0x9f0  running statistic/maximum
-+0x9f4  saved recoverable baseline
-+0x9f8  stop result: 1=Stop4, 2=Stop5
-+0x9fc  stop condition: 1..3
-+0xa00  detector mode gate
-+0xa04  cadence selector: 0=50, nonzero=500
-+0xa05  loop-active byte
-+0xa06  detector-active/continue byte
-+0xa08  signed segment baseline
-+0xa0c  baseline recoverable/free-progress value
-```
-
-## Reconstructed threshold/helper
-
-Source: `fs/f2fs/tran_gc_threshold_reconstructed.c`.
-
-Confirmed:
-
-```c
-user_segments = user_block_count >> log_blocks_per_seg;
-sit_segments  = sit_blocks >> log_blocks_per_seg;
-span          = user_segments - sit_segments;
-free_percent  = free_segments * 100 / span;
-fragmentation = 100 - free_percent;
-```
-
-Policy constants:
+Primary binary range: `0x37ada8..0x37ae94`.
 
 ```text
-small scale table @ Image+0x4d4 = {0x800,0xc00,0x1000,0x1000}
-small-table condition: (user_segments >> 15) == 0
-otherwise scale = 0x1800
-selector = max(byte @ 0x1a13890, byte @ 0x1a13894)
-factor table @ 0x4e4 = {100,100,100,80,80,80,60,60}
++0x1a13990 = invocation counter
++0x1a13998 = controller
 ```
 
-Stop-2:
-
-```c
-delta = (s32)(free_segments - reserved_segments);
-threshold = (factor * scale * 0x51EB851F) >> 37;
-stop2 = delta > threshold;
-```
-
-Stop-3:
-
-```c
-span = (s64)user_segments - sit_segments;
-reference = (s64)(s32)(free_segments - reserved_segments);
-p = left_space_table64[selector] * span;
-high = smulh(p, 0xA3D70A3D70A3D70B);
-scaled = (high + p) >> 6;
-scaled += (p < 0);
-stop3 = scaled < reference;
-```
-
-## `tran_gc_thread_func` reconstruction
-
-Primary source: `fs/f2fs/tran_gc_thread_reconstructed.c`.
-
-Integrated:
-- detector arming/state gate;
-- metric collection;
-- Stop 1..5 operand chains and writes;
-- state-3 timed-wait structure;
-- freezer-aware task predicate;
-- `+0x974` event producer/consumer role;
-- superblock freeze-protection gate around the vendor GC policy path.
-
-Metric producers:
+Controller mapping:
 
 ```text
-arming_dirty_segments = sum(dirty_info +0x68 .. +0x7c)
+controller 0 -> f2fs_gc(sbi, FORCE_FG_GC, true, NULL_SEGNO)
+controller 1 -> save gc_mode; temporary gc_mode=2 (URGENT); call; restore
+controller 2 -> save gc_mode; temporary gc_mode=3 (GREEDY); call; restore
+```
+
+`FORCE_FG_GC` is mount option bit 14.
+
+The direct lower call target is **`0x3503a8`**.
+
+Source: `fs/f2fs/tran_gc_wrapper_reconstructed.c`.
+
+## Actual X683 `f2fs_gc()` execution path
+
+**`0x3503a8` is the actual four-argument X683 F2FS GC entry.**
+
+Recovered flow:
+
+```text
+0x3503a8 f2fs_gc(sbi, sync, background, segno)
+    |
+    +-- trace/entry bookkeeping
+    +-- gc_type = sync ? FG_GC : BG_GC
+    +-- active/checkpoint-error checks
+    +-- BG free-space / prefree checkpoint handling
+    +-- BG -> FG escalation when free sections remain low
+    +-- reject BG GC when background == false
+    |
+    +-- victim selection
+    |     |
+    |     +-- build policy context
+    |     +-- DIRTY_I(sbi)->v_ops->get_victim()
+    |           args: sbi, &segno, gc_type, NO_CHECK_TYPE, LFS
+    |
+    +-- victim section migration
+    |     |
+    |     +-- SSA/summary preparation
+    |     +-- iterate segs_per_sec segments
+    |     +-- NODE/DATA migration dispatch
+    |     +-- valid-block / section-free accounting
+    |     +-- merged-write submission for FG GC
+    |
+    +-- stats / cur_victim_sec
+    +-- async repeat with segno=NULL_SEGNO when free-space remains low
+    +-- checkpoint after promoted/foreground async GC
+    |
+    +-- SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0
+    +-- SIT_I(sbi)->last_victim[FLUSH_DEVICE] = init_segno
+    +-- mutex_unlock(&sbi->gc_mutex)
+    +-- put_gc_inode()
+    +-- return
+```
+
+Direct binary proof of `mutex_unlock(&sbi->gc_mutex)` is the call from `0x3503a8` epilogue at `0x352ba8` with `x0 = sbi + 0x508`.
+
+Direct binary proof of SIT cursor cleanup is the stores around `0x352a8c..0x352a9c` through `sit_info`.
+
+The four-argument API/cursor changes are also confirmed by the 2017 F2FS API change. citeturn143882view0
+
+## Victim selection
+
+Inside `0x3503a8`, around `0x350808..0x350850`, the binary performs an indirect call through the dirty-manager vector:
+
+```c
+DIRTY_I(sbi)->v_ops->get_victim(sbi, &segno,
+        gc_type, NO_CHECK_TYPE, LFS);
+```
+
+This is the actual victim-selection boundary.
+
+The target-era policy family remains:
+
+```text
+BG_GC -> cost-benefit by default
+FG_GC -> greedy by default
+```
+
+with `gc_mode` altering the selected policy.
+
+## Actual migration engine
+
+The section-migration logic is inside `0x3503a8`, not `0x362c40`.
+
+The binary contains the same core structure as the 4.14/4.15 F2FS dispatcher:
+
+```text
+victim section
+  -> summary/SSA pages
+  -> per-segment valid-block checks
+  -> NODE/DATA dispatch
+  -> live-block migration
+  -> segment statistics
+  -> FG complete-section detection
+  -> merged NODE/DATA writes
+```
+
+Historical 4.15 `do_garbage_collect()` confirms the same `segs_per_sec` iteration, summary-page handling, NODE/DATA dispatch, foreground freed-segment count, merged writes and `sec_freed` rule. citeturn497268view0
+
+Historical 4.15 `f2fs_gc()` confirms the BG/FG checks, repeat/checkpoint flow, SIT cursor cleanup and mutex release. citeturn497268view0turn143882view0
+
+## Separate vendor policy routine: `0x366cd4`
+
+`0x366cd4` is **not** `f2fs_gc()` and is not the controller wrapper.
+
+It is the separate Transsion F2FS/GC policy/orchestration routine.
+
+Direct branch map:
+
+```text
+0x366d00 -> 0x35cc18(selector 4)
+0x366d10 -> 0x373108(selector 0x80)
+0x366d1c -> 0x35cc18(selector 1)
+0x366d2c -> 0x35d22c(selector 0x1c7)
+0x366d38 -> 0x35cc18(selector 0)
+```
+
+If selector-0 returns true:
+
+```text
+0x366d4c -> 0x362c40(sbi,0,0)
+```
+
+otherwise:
+
+```text
+0x366d5c -> 0x363288(sbi,0xe38)
+```
+
+Then `0x366cd4` checks `gc_mode`, `sbi +0x444..0x45c`, free/reservation state, fixed-point thresholds, and time/counter guards. It has a post-GC path through `0x3e1014`, `0x34e224`, `0x3e1558`, and `0x341250`, and increments `stat_info +0x16c`.
+
+### Helper identities
+
+`0x35cc18`:
+
+- multi-mode vendor GC policy predicate;
+- selector 0..5 dispatches different threshold arithmetic;
+- returns boolean.
+
+`0x373108`:
+
+- vendor policy gate keyed from `sbi +0x4b9` bit 5;
+- additional segment/threshold accounting;
+- returns boolean.
+
+`0x362c40`:
+
+- internal vendor segment-management helper;
+- scans manager bitmaps/arrays and invokes lower helper `0x3655d8`;
+- **not** the `f2fs_gc()` entry.
+
+`0x363288`:
+
+- internal vendor linked-list drain/cleanup helper;
+- **not** `put_gc_inode()` without further proof.
+
+`0x341250`:
+
+- separate filesystem write/GC-balancing helper.
+
+## Detector / state-3
+
+Controller/detector state offsets:
+
+```text
++0x990 cycle
++0x998 controller
++0x9c0 controller-write guard
++0x9d0 loop state
++0x9d4 detector state
++0x9d8 repeated counter
++0x9e0 detector cycles
++0x9f0 running max
++0x9f4 saved recoverable baseline
++0x9f8 stop result
++0x9fc stop condition
++0xa00 detector mode
++0xa04 cadence selector
++0xa05 loop active
++0xa06 detector active/continue
++0xa08 signed baseline segment
++0xa0c baseline recoverable/free-progress
+```
+
+Metrics:
+
+```text
+arming_dirty_segments = sum(dirty_info +0x68..+0x7c)
 recoverable_segments  = free_info->free_segments + dirty_info->nr_dirty[PRE]
 ```
 
 Stop operands:
 
 ```text
-Stop1 delta = recoverable_segments - +0x9f4
-Stop2 delta = recoverable_segments - sm_info->reserved_segments
-Stop3 reference = recoverable_segments - reserved_segments
-Stop4 delta = (running_max - recoverable_segments) + saved_sit_segments - sit_segments
-Stop5 progress = sit_segments + (recoverable_segments - +0xa0c)
+Stop1 = recoverable - +0x9f4
+Stop2 = recoverable - reserved_segments
+Stop3 = scaled(user_segments - sit_segments) < (recoverable - reserved_segments)
+Stop4 = (running_max - recoverable) + saved_sit_segments - sit_segments
+Stop5 = sit_segments + (recoverable - +0xa0c) <= +0xa08
 ```
 
-Direct Stop writes:
+Direct writes:
 
 ```text
-Stop1 -> +0x9fc = 1
-Stop2 -> +0x9fc = 2
-Stop3 -> +0x9fc = 3
-Stop4 -> +0x998 = 2 unless +0x9c0 blocks; +0x9f8 = 1
-Stop5 -> +0x998 = 2; +0x9f8 = 2
+Stop1 -> +0x9fc=1
+Stop2 -> +0x9fc=2
+Stop3 -> +0x9fc=3
+Stop4 -> +0x998=2 unless +0x9c0 blocks; +0x9f8=1
+Stop5 -> +0x998=2; +0x9f8=2
 ```
 
-## Final state-3 freezer resolution
-
-The region `0x377494..0x377570` is semantically resolved at the kernel/freezer level.
+State-3 freezer resolution:
 
 ```text
-+0x9d4 = 3
-+0xd94 -> 0xce58c -> timeout conversion
-0x57554 -> scheduler/NEED_RESCHED check
-0x9c688 -> wait-entry initialization
-0x9c6e8 -> prepare-to-wait / TASK_INTERRUPTIBLE
-0x57554 -> scheduler recheck
-0xcc774 -> freezer-aware task eligibility predicate
-0x9c8d0 -> finish_wait
-0x57554 -> final scheduler recheck
-Image+0x19f0020 -> system_freezing_cnt
-Image+0x19f0024 -> pm_freezing
-Image+0x19f0028 -> pm_nosig_freezing
-+0x974 -> vendor event-driven wake/re-entry gate
-metric collection
+0x1051a8 = cgroup_freezing(task)
++0x20 at Image+0x19f0000 = system_freezing_cnt
++0x24 = pm_freezing
++0x28 = pm_nosig_freezing
+0xcc774 = vendor-modified freezing_slow_path eligibility predicate
++0x974 = event 9 state 0/4 wake-reentry flag
 ```
 
-### `0x1051a8`
+`0xcc774` additionally rejects `PF_KSWAPD` in X683.
 
-Resolved to `cgroup_freezing(struct task_struct *)`.
+## Threshold arithmetic
 
-Its binary shape is a protected task->cgroup->freezer-state lookup followed by `state & 0x6`, matching the Android 4.14 cgroup freezer predicate.
-
-### `0xcc774`
-
-Resolved as a vendor-modified inverse/eligibility form of `freezing_slow_path()`:
-
-```c
-if (task->flags & (PF_NOFREEZE | PF_SUSPEND_TASK))
-    return false;
-if (task->flags & PF_KSWAPD)
-    return false; /* X683-specific deviation */
-if (pm_nosig_freezing)
-    return false;
-if (cgroup_freezing(task))
-    return false;
-if (!pm_freezing)
-    return false;
-if (task->flags & PF_KTHREAD)
-    return false;
-return true;
-```
-
-### Freezer-object correction
-
-The detector's `x22 + 0x20` was previously treated as a vendor controller field. That was wrong.
+Scale table:
 
 ```text
-x22 -> Image+0x19f0000
-[x22 + 0x20] = system_freezing_cnt
-[x22 + 0x24] = pm_freezing
-[x22 + 0x28] = pm_nosig_freezing
+{0x800, 0xc00, 0x1000, 0x1000}; otherwise 0x1800
 ```
 
-Therefore the detector's `+0x20` check is a direct system-freezer-state gate.
-
-### `+0x974`
-
-Producer at `0x37acf8`:
+Factor table:
 
 ```text
-event != 9 -> return
-event == 9:
-  state == 0 -> +0x974 = 1
-  state == 4 -> +0x974 = 0
-  other states -> unchanged
+{100,100,100,80,80,80,60,60}
 ```
 
-When auxiliary state `+0x898` exists, the callback also signals the object at `+0x978` with `(3,1,0)` on the state-changing branches.
+Selector: `max(Image+0x1a13890, Image+0x1a13894)`.
 
-Public/vendor event identity remains unresolved.
+Stop-2 fixed-point multiplier: `0x51EB851F >> 37`.
 
-## Superblock/per-CPU synchronization helpers
+Stop-3 signed fixed-point multiplier: `0xA3D70A3D70A3D70B` followed by the recovered `smulh`/shift sequence.
 
-### `0x1eca60`
-
-Correction: this address is **not** `__sb_start_write()`.
-
-The current binary mapping places `0x1eca60` in the per-CPU reader synchronization family (`percpu_rwsem` / `percpu_down_read` lineage). It is called from the detector with `(level=1, wait=0)`-shaped arguments, but the exact vendor/build-specific wrapper identity should not be renamed beyond that without preserving the machine-code caveat.
-
-### `0x1ec9e4`
-
-This is the corresponding per-CPU reader-release path used after the detector's synchronized section.
-
-### `0x341250`
-
-This separate X683 helper contains the filesystem write/GC-balancing path and must not be conflated with `0x1eca60`. Its exact upstream symbolic name remains under comparison against the matching 4.14 source.
-
-## Exact `tran_f2fs_gc()` wrapper
-
-Primary source: stock `0x37ada8..0x37ae94`.
-
-This is the actual Transsion controller wrapper:
-
-```c
-controller = *(u32 *)(Image + 0x1a13998);
-force_fg_gc = (sbi->mount_opt.opt >> 14) & 1;
-
-switch (controller) {
-case 0:
-    return f2fs_gc(sbi, force_fg_gc, true, NULL_SEGNO);
-case 1:
-    old = sbi->gc_mode;
-    sbi->gc_mode = 2;
-    ret = f2fs_gc(sbi, force_fg_gc, true, NULL_SEGNO);
-    sbi->gc_mode = old;
-    return ret;
-case 2:
-    old = sbi->gc_mode;
-    sbi->gc_mode = 3;
-    ret = f2fs_gc(sbi, force_fg_gc, true, NULL_SEGNO);
-    sbi->gc_mode = old;
-    return ret;
-default:
-    /* stock path does not use another controller value */
-}
-```
-
-Exact wrapper facts:
+## Current source files
 
 ```text
-+0x1a13990 = invocation counter; incremented on entry
-+0x1a13998 = controller
-sbi + 0x4b8 = mount_opt.opt
-sync       = mount_opt bit 14 = F2FS_MOUNT_FORCE_FG_GC
-background = true
-segno      = NULL_SEGNO
+fs/f2fs/tran_gc_thread_reconstructed.c
+fs/f2fs/tran_gc_threshold_reconstructed.c
+fs/f2fs/tran_gc_wrapper_reconstructed.c
+fs/f2fs/gc_reconstructed.c
 ```
 
-Nearby stock strings identify vendor GC modes:
+`gc_reconstructed.c` is still an inferred scaffold, not proprietary-source recovery or build-proven source, but its major X683 control-flow corrections now include:
 
-```text
-"gc mode is COST"
-"gc mode is URGENT"
-"gc mode is GREEDY"
-```
-
-The vendor `gc_mode` values are therefore:
-
-```text
-1 = COST
-2 = URGENT
-3 = GREEDY
-```
-
-Controller mapping:
-
-```text
-controller 0 -> preserve current gc_mode
-controller 1 -> temporary gc_mode 2 (URGENT)
-controller 2 -> temporary gc_mode 3 (GREEDY)
-```
-
-Do not confuse these controller values with the underlying vendor `gc_mode` values.
-
-`fs/f2fs/tran_gc_wrapper_reconstructed.c` was corrected to preserve these exact numeric semantics.
-
-## Separate F2FS/GC policy routine
-
-`0x366cd4` is a **separate** vendor F2FS/GC policy routine. It invokes lower GC/helper paths and must not be merged with the controller wrapper at `0x37ada8`.
-
-Current mapped calls include:
-
-```text
-0x35cc18 -> GC policy predicate/helper family
-0x362c40 -> lower F2FS GC execution/migration path
-0x363288 -> cleanup/slow path
-0x341250 -> filesystem write/GC-balancing helper
-```
-
-Exact source-level naming of that larger policy routine remains the next differential task.
-
-## Stock F2FS GC reconstruction status
-
-`fs/f2fs/gc_reconstructed.c` remains an inferred reconstruction, not recovered proprietary source. It is a scaffold and must not be presented as compile-ready or byte-equivalent.
-
-Historical Android/common 4.14 sources confirm the four-argument `f2fs_gc()` ABI and caller-owned GC mutex model. citeturn946769search8turn296107search0
+- four-argument ABI;
+- victim selection boundary;
+- section migration structure;
+- SIT cursor cleanup;
+- `mutex_unlock(&sbi->gc_mutex)` at the proven epilogue;
+- synchronous `0/-EAGAIN` outcome structure.
 
 ## Vendor controls
 
-Known registered descriptors:
-
 ```text
-need_switch_ssr
-  registration 0x37af88
-  descriptor Image+0x173b9d0
-
-tran_urgent_gc
-  registration 0x37b068
-  descriptor Image+0x173bbb0
-
-detect_charger_type
-  registration 0x37b184
-  descriptor Image+0x173bf70
+need_switch_ssr        registration 0x37af88, descriptor Image+0x173b9d0
+tran_urgent_gc         registration 0x37b068, descriptor Image+0x173bbb0
+detect_charger_type    registration 0x37b184, descriptor Image+0x173bf70
 ```
 
-These are control/data descriptors, not proven standalone callback functions.
+These are control/data descriptors, not proven standalone callbacks.
 
-`tran_gc_usb_wakelock` exists as a string but its separate registration/use path is unresolved.
+`tran_gc_usb_wakelock` string exists; separate registration/use path unresolved.
 
-## stat_info
+## Honest project status
 
-`sbi + 0x568` points to stat info. Direct updates observed:
-
-```text
-+0x164 increment
-+0x174 increment
-+0x184 accumulated
-+0x178 increment
-+0x188 accumulated
-+0x18c increment
-+0x190 increment
-+0x198 accumulated
-```
-
-Exact X683 member names remain unresolved.
-
-## Current honest project status
-
-Binary-level GC architecture: ~90% confidence.
-
-Source reconstruction: substantial, with the controller wrapper now essentially exact but the larger vendor policy body still under reconstruction.
-
-Buildability: not established.
-
-Replacement-kernel readiness: not established.
-
-High-confidence completed:
-- boot/Image verification;
-- critical F2FS layout/ABI mapping;
-- detector/controller semantics;
-- Stop 1–5 state writes and operand chains;
-- threshold arithmetic;
-- detector arming predicates;
-- state-3 wait structure;
-- freezer subsystem identification;
-- vendor-modified freezer predicate;
-- `+0x974` producer/consumer role;
-- exact `tran_f2fs_gc()` controller wrapper at `0x37ada8`;
-- separation of wrapper and `0x366cd4` policy routine;
-- vendor-control registration bindings.
+- Binary-level GC architecture: **~92% confidence**.
+- Vendor detector/controller: **high confidence**.
+- `tran_f2fs_gc()` wrapper: **essentially exact at binary level**.
+- Actual X683 `f2fs_gc()` entry/execution path: **high confidence at architectural/control-flow level**.
+- Vendor `0x366cd4` policy body: **substantial, but helper names/edge branches remain**.
+- Source reconstruction: **not build-proven**.
+- Replacement-kernel readiness: **not established**.
 
 Remaining high-value gaps:
-1. complete `0x366cd4` vendor F2FS policy-body reconstruction;
-2. exact semantic names of its helper calls and return values;
-3. `tran_gc_usb_wakelock` path;
-4. exact stat_info member names;
-5. full exact stock-X683 `gc.c` differential;
-6. compilation/integration against the correct X683/H694 4.14.141 source tree.
 
-## Recent commits
+1. finish exact source-level differential for `0x366cd4` helper semantics;
+2. identify the remaining X683 `gc_node_segment()` / `gc_data_segment()` deviations from reference 4.14;
+3. resolve `tran_gc_usb_wakelock` path;
+4. resolve exact `stat_info` member names;
+5. integrate/compile against the correct X683/H694 4.14.141 source tree.
 
-- `718250acd83fe4fd033f75059720ee0afd9a4dc0` — corrected `tran_f2fs_gc()` source to exact controller/mode/ABI semantics.
-- `38fd69a4d61081c63e3cf6394f7b7cdba428ca5f` — exact `tran_f2fs_gc()` wrapper evidence.
-- `f9f447f02964165bdd442a2f0df46b779f9db7e7` — GC helper-cluster deep pass.
-- `85b8a278e9c20ffe8cf13f4f39e2229eaea24bee` — corrected `0x1eca60` identity.
-- `01b0343e0cb0de555dfd3ca6c2379d153b0219c5` — earlier synchronization mapping note.
+## Recent authoritative commits
+
+- `98c2eceb7549339eb997013d86591eb1ce953d6f` — corrected final GC entry boundary and execution-path document.
+- `4fb4860f6e4ca34c66a96db6f73d1807c4861b6c` — corrected X683 `f2fs_gc()` mutex release.
+- `f99d88723683ded23aeff891aeebc2000a19d3f5` — tightened four-argument GC reconstruction.
+- `a9e9d17ca3e20f07bab01670bbb5a5a4a3bbacd7` — initial full execution-path reconstruction.
+- `718250acd83fe4fd033f75059720ee0afd9a4dc0` — exact `tran_f2fs_gc()` wrapper correction.
 
 Use this file as the canonical continuation point in future chats. Read it from `main` before continuing.
