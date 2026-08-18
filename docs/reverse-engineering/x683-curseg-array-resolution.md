@@ -10,7 +10,7 @@ The stock binary loads:
 ldr x18, [sm_info, #0x18]
 ```
 
-Historical 4.14 F2FS independently defines this field as:
+Historical 4.14 F2FS independently identifies this member as:
 
 ```c
 struct curseg_info *curseg_array;
@@ -20,35 +20,26 @@ so the X683 `sm_info + 0x18` member is strongly identified as the active-segment
 
 ## X683 array geometry
 
-The same `f2fs_gc()` path accesses:
+The stock GC path accesses these words:
 
 ```text
-curseg_array + 0x1ac
-curseg_array + 0x21c
-curseg_array + 0x28c
-curseg_array + 0x5c
+curseg_array +0x5c
+curseg_array +0x1ac
+curseg_array +0x21c
+curseg_array +0x28c
 ```
 
-The first three offsets differ by exactly `0x70`:
+The offsets satisfy:
 
 ```text
-0x1ac = 3 * 0x70 + 0x5c
-0x21c = 4 * 0x70 + 0x5c
-0x28c = 5 * 0x70 + 0x5c
+0x1ac = 0x5c + 3*0x70
+0x21c = 0x5c + 4*0x70
+0x28c = 0x5c + 5*0x70
 ```
 
-Therefore the stock X683 layout strongly establishes:
+Therefore the X683 active-log array has a **0x70-byte per-entry stride**, and `+0x5c` is the same member position in every entry.
 
-```text
-curseg_array[3] + 0x5c = word used by GC
-curseg_array[4] + 0x5c = word used by GC
-curseg_array[5] + 0x5c = word used by GC
-curseg_array[0] + 0x5c = word used by GC
-```
-
-with a vendor `curseg_info` stride of **0x70 bytes**.
-
-The six array entries correspond to the standard six active logs:
+The six entries use the standard F2FS active-log ordering:
 
 ```text
 0 = CURSEG_HOT_DATA
@@ -61,46 +52,82 @@ The six array entries correspond to the standard six active logs:
 
 Historical F2FS confirms this ordering. citeturn297041search7
 
-## What the `+0x5c` word is
+## `curseg_info +0x5c` is now proven `segno`
 
-The GC path uses the member value as a per-current-log segment-related scalar and later uses the same member of element 0. The exact source-level X683 name of this `+0x5c` member is **not promoted to proven** yet.
+At the GC selector, the binary performs:
 
-Do not automatically call it `segno` solely from historical structure layout. The historical `struct curseg_info` has several segment-related fields and the X683 vendor structure is demonstrably larger (`0x70` stride), so the exact member must be matched from its writers/readers.
+```asm
+ldr w18, [x18, #0x5c]
+...
+madd x18, w18, x26, x0
+ldrh w18, [x18, #0x2]
+```
+
+where `x0` is the SIT/sentries base and `w18` is the value loaded from the active-segment entry. The value is therefore a **segment number used to index the SIT entry array**.
+
+The same pattern is repeated for the node-log entries at `+0x1ac`, `+0x21c`, and `+0x28c`.
+
+Therefore:
+
+```text
+curseg_array[0].segno = +0x5c
+curseg_array[3].segno = +0x1ac
+curseg_array[4].segno = +0x21c
+curseg_array[5].segno = +0x28c
+```
+
+and the same `+0x5c` member exists in entries 1 and 2 by the recovered 0x70 stride.
 
 ## Correction to old notes
 
-The old description:
+These offsets are **not** members of `dirty_info`:
 
 ```text
-dirty_info + 0x1ac
- dirty_info + 0x21c
- dirty_info + 0x28c
+dirty_info +0x1ac
+ dirty_info +0x21c
+ dirty_info +0x28c
 ```
 
-was incorrect.
-
-These are accesses through:
+The actual object flow is:
 
 ```text
-sm_info + 0x18 -> curseg_array
+sbi +0x80
+   -> sm_info
+      +0x18
+         -> curseg_array
+            +0x5c / +0x1ac / +0x21c / +0x28c
+               -> current segment numbers
 ```
 
-not through `dirty_info`.
-
-The actual dirty-info candidate region remains:
+The dirty-info candidate region remains separate:
 
 ```text
 dirty_info +0x68..+0x7c
 ```
 
-for the six `nr_dirty[]` counters, pending an independent X683 validation.
+for the six `nr_dirty[]` counters, pending independent X683 validation.
+
+## Source-level reconstruction boundary
+
+Only the proven member is promoted into the X683 structure model:
+
+```c
+struct x683_curseg_info {
+    /* vendor-specific fields/padding */
+    u8 _x683_unknown[0x5c];
+    u32 segno; /* +0x5c, proven */
+    /* remaining vendor-specific tail to 0x70 */
+};
+```
+
+Do not substitute the compact public `struct curseg_info` layout wholesale: the X683 active-log stride is demonstrably `0x70` bytes.
 
 ## Confidence
 
 | Item | Confidence |
 |---|---|
-| `sm_info+0x18 = curseg_array` | High: binary register flow + historical structure match |
-| six-entry active-log ordering | High: standard F2FS ordering + six distinct X683 elements |
-| X683 per-entry stride = `0x70` | High: exact offset arithmetic |
-| repeated member offset = `+0x5c` | High: direct arithmetic |
-| exact symbolic name of `+0x5c` member | Unresolved |
+| `sm_info+0x18 = curseg_array` | High |
+| six active-log ordering | High |
+| X683 per-entry stride = `0x70` | High |
+| `curseg_info +0x5c = segno` | **High / direct SIT-index data flow** |
+| exact remaining X683 `curseg_info` members | Unresolved |
