@@ -121,8 +121,10 @@ gc_more:
 	}
 
 	/* Critical-path balance calls must not perform BG GC. */
-	if (gc_type == BG_GC && !background)
+	if (gc_type == BG_GC && !background) {
+		ret = -EINVAL;
 		goto stop;
+	}
 
 	if (segno == NULL_SEGNO) {
 		if (!x683_get_victim(sbi, &segno, gc_type)) {
@@ -152,12 +154,12 @@ gc_more:
 	}
 
 stop:
-	/* The explicit-segment ABI keeps the initial segment for cursor cleanup. */
-	if (SIT_I(sbi)) {
-		SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
-		SIT_I(sbi)->last_victim[FLUSH_DEVICE] = init_segno;
-	}
+	/* X683 4-argument GC clears these SIT victim cursors before returning. */
+	SIT_I(sbi)->last_victim[ALLOC_NEXT] = 0;
+	SIT_I(sbi)->last_victim[FLUSH_DEVICE] = init_segno;
 
+	/* Direct X683 epilogue at 0x352ba8 releases sbi->gc_mutex. */
+	mutex_unlock(&sbi->gc_mutex);
 	put_gc_inode(&gc_list);
 
 	if (sync)
