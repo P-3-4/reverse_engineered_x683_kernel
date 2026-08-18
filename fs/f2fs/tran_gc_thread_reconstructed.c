@@ -97,27 +97,27 @@ static inline void x683_set_controller(
 }
 
 /*
- * Stock producer for vendor/global +0x974.
+ * Exact +0x974 producer shape recovered at 0x37acf8.
  *
- * Recovered callback shape:
- *   event == 9:
- *     inspect *(event_data + 8)
- *     state == 4 -> +0x974 = 0
- *     state == 0 -> +0x974 = 1
- *     other states -> leave unchanged
+ * The callback receives an event number and event data. For event 9 it reads
+ * *(event_data + 8): state 0 sets the vendor/global wait flag to 1, state 4
+ * clears it. Other state values leave the flag unchanged. When auxiliary
+ * state +0x898 exists, both branches signal the object at +0x978 with
+ * operation parameters (3, 1, 0).
  *
- * When an auxiliary object at +0x898 is present, the callback also signals
- * the waitqueue/notification object at +0x978. The exact public event name
- * is not proven; do not give this callback a fabricated semantic name.
+ * The callback's public vendor/event name is not proven, so this is kept as a
+ * primitive rather than assigned a fabricated name.
  */
-static inline void x683_update_wait_flag(struct x683_tran_gc_vendor_state *v,
-					 u32 event, u32 event_state)
+static inline void x683_event9_update(u32 event, u32 event_state,
+				       u32 *wait_flag)
 {
-	if (event != 9)
+	if (!wait_flag || event != 9)
 		return;
 
-	if (event_state == 4)
-		v->detector_active = v->detector_active;
+	if (event_state == 0)
+		*wait_flag = 1;
+	else if (event_state == 4)
+		*wait_flag = 0;
 }
 
 /*
@@ -167,20 +167,13 @@ static void x683_arm_detector(struct f2fs_sb_info *sbi,
 }
 
 /*
- * State 3 wait/recheck semantics recovered from 0x377494..0x377570:
+ * State 3 wait/recheck semantics recovered from 0x377494..0x377570.
  *
- *   +0x9d4 = 3
- *   timeout source +0xd94 -> 0xce58c
- *   check NEED_RESCHED
- *   init_wait / prepare_to_wait(TASK_INTERRUPTIBLE)
- *   recheck NEED_RESCHED and vendor/task predicate 0xcc774
- *   finish_wait
- *   final NEED_RESCHED check
- *   consult +0x974 before entering metric collection
- *
- * 0x974 is a producer-driven bypass/recheck flag. The concrete callback
- * producer is documented above; the callback's exact public event name is not
- * yet established.
+ * The stock path performs the real kernel waitqueue/scheduler sequence, then
+ * consults the producer-driven +0x974 flag before metric collection. The
+ * concrete callback producer is now known, but its public event name remains
+ * unresolved. +0x20 on the controller object and helper 0xcc774 are still
+ * vendor/task predicates.
  */
 static bool x683_state3_wait(struct x683_tran_gc_vendor_state *v,
 			     u32 timeout_ms,
