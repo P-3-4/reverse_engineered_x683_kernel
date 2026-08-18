@@ -16,31 +16,30 @@ All addresses below are decompressed Image offsets.
 
 ## Registration routine
 
-The vendor GC debug/control registration sequence beginning around `0x37b2f0` repeatedly calls a common helper at `0x274ec8`.
+The vendor GC debug/control registration sequence begins around `0x37b2f0` and repeatedly calls a common helper at `0x274ec8`.
 
-The setup loads the same global descriptor/object pointer from:
+The setup loads the second argument from:
 
 ```text
-Image + 0x1698a20
+ADRP x20, 0x1a13000
+LDR  x1, [x20, #0xa20]
 ```
 
-and passes that object as the second argument while passing each control name string as the first argument.
+so the pointer source is **Image + 0x1a13a20**, not `0x1698a20`.
 
-Therefore the sequence is a **generic attribute/control registration table**, not a collection of direct calls to `need_switch_ssr()`, `tran_urgent_gc()`, or `detect_charger_type()` implementations.
+The value stored at that BSS/global location is runtime state; the on-image bytes are initially zero. The same loaded pointer is passed as `x1` for the whole contiguous registration sequence.
 
-## Exact named-control call sites
+Therefore this code is a **generic attribute/control registration path**, not a collection of direct calls to `need_switch_ssr()`, `tran_urgent_gc()`, or `detect_charger_type()`.
 
-| Control | Registration call | Name string offset | Descriptor/data slot index | qword-0 pointer |
-|---|---:|---:|---:|---|
-| `need_switch_ssr` | `0x37b3e4` | `0x10a6359` | 9 | `0xffffff80099c5558` |
-| `tran_urgent_gc` | `0x37b484` | `0x10a63ac` | 19 | `0xffffff80099c55b0` |
-| `detect_charger_type` | `0x37b504` | `0x10a6414` | 27 | `0xffffff80099c55f8` |
+## Exact named-control registration call sites
 
-The index is the position in the ordered 24-byte descriptor sequence beginning at the object around `0x1698a20`. The first qword is treated here only as a **descriptor/data pointer**. It is not claimed to be a function pointer.
+| Control | Registration call | Name string offset |
+|---|---:|---:|
+| `need_switch_ssr` | `0x37b3e4` | `0x10a6359` |
+| `tran_urgent_gc` | `0x37b484` | `0x10a63ac` |
+| `detect_charger_type` | `0x37b504` | `0x10a6414` |
 
-## Other controls in the same sequence
-
-The same helper registers, in order, controls including:
+The same sequence also registers:
 
 ```text
 life_time
@@ -76,115 +75,108 @@ inc_gc_seg_threshold
 dec_gc_seg_threshold
 ```
 
-This ordering makes the registration-table interpretation strong: the strings are not random nearby literals.
+The repeated `x1` load from `Image + 0x1a13a20` and the direct name-string sequence are binary-confirmed.
 
 ## Common helper `0x274ec8`
 
-Direct body inspection shows `0x274ec8` is a generic registry/attribute helper. It saves the input arguments, performs lookup/allocation/list traversal, and has an error path for a missing registration target.
+Direct disassembly shows `0x274ec8` is a generic registry/attribute lookup-and-link helper.
 
-It is therefore **not** the implementation of any of the three named controls.
-
-The common helper receives:
+Its relevant flow is:
 
 ```text
-x0 = control-name string
-x1 = common vendor descriptor/object
+x0 = supplied control name
+x1 = common runtime object
+        |
+        +-> internal lookup/allocation helper
+        +-> list traversal through [x1 + 0x38]
+        +-> name/hash comparison
+        +-> link/registration
+        +-> error path if the target is absent
 ```
 
-and performs generic registration/lookup work.
+It is **not** the implementation of any one named GC control.
+
+The helper does not receive a distinct callback pointer at these registration call sites.
 
 ## What is actually bound
 
 ### `need_switch_ssr`
 
-High-confidence binding:
+Proven registration binding:
 
 ```text
 string 0x10a6359
-    -> registration call 0x37b3e4
-    -> descriptor index 9
-    -> descriptor/data pointer 0xffffff80099c5558
-    -> generic helper 0x274ec8
+    -> call 0x37b3e4
+    -> common registration helper 0x274ec8
+    -> runtime object loaded from Image + 0x1a13a20
 ```
 
-This proves `need_switch_ssr` is represented in the vendor control/attribute descriptor and identifies its associated data slot.
-
-It does **not** yet prove that `0xffffff80099c5558` is the function implementing the decision.
+The actual read/store callback or decision function is still indirect through the runtime object's registered attribute structures.
 
 ### `tran_urgent_gc`
 
 ```text
 string 0x10a63ac
-    -> registration call 0x37b484
-    -> descriptor index 19
-    -> descriptor/data pointer 0xffffff80099c55b0
-    -> generic helper 0x274ec8
+    -> call 0x37b484
+    -> common registration helper 0x274ec8
+    -> runtime object loaded from Image + 0x1a13a20
 ```
 
-Again, this proves the control/data binding, not a callback address.
+Again, this is a control/attribute registration binding, not an implementation address.
 
-The independently proven GC state machine still establishes that controller state `2` causes the wrapper to temporarily force `gc_mode = 3` (URGENT) before calling stock `f2fs_gc()`.
+The independent GC evidence proves that controller state `2` causes the Transsion wrapper to force `gc_mode = 3` (URGENT) for one `f2fs_gc()` invocation, but that does **not** prove `tran_urgent_gc` is the function implementing that transition.
 
 ### `detect_charger_type`
 
 ```text
 string 0x10a6414
-    -> registration call 0x37b504
-    -> descriptor index 27
-    -> descriptor/data pointer 0xffffff80099c55f8
-    -> generic helper 0x274ec8
+    -> call 0x37b504
+    -> common registration helper 0x274ec8
+    -> runtime object loaded from Image + 0x1a13a20
 ```
 
-This is a control/data binding. Its exact runtime producer/consumer is still indirect.
+Its runtime producer/consumer remains indirect.
 
 ### `tran_gc_usb_wakelock`
 
-`tran_gc_usb_wakelock` exists at string offset `0x10a5ee7`, but it is **not present in this particular contiguous registration sequence**. Do not attach it to the same descriptor table without locating its separate registration/use site.
+`tran_gc_usb_wakelock` exists at string offset `0x10a5ee7`, but it does **not** occur in this contiguous registration sequence. Its separate registration/use path is still unresolved.
 
-## Why these are not direct function calls
+## Important correction to earlier reconstruction
 
-The descriptor region around `0x1698a20` is heterogeneous: adjacent qwords include pointers into kernel data/BSS and pointers into executable image regions. The structure is therefore more complex than a simple `{name, callback, flags}` array, and the qword-0 fields above cannot safely be called callbacks without tracing the generic helper's field interpretation.
+A previous pass associated the ordered 24-byte records around `Image + 0x1698a20` with the three named controls. That association is **withdrawn**.
 
-Accordingly:
+The actual registration routine loads its common runtime object from `Image + 0x1a13a20`. The bytes at `0x1698a20` are not sufficient evidence for a direct name-to-callback mapping and must not be used as such.
 
-```text
-need_switch_ssr   != proven function symbol
-tran_urgent_gc    != proven function symbol
-detect_charger_type != proven function symbol
-```
+This correction prevents the project from turning a coincidental data pattern into a false callback binding.
 
-What is proven is:
+## Current binding confidence
 
-```text
-name -> vendor control descriptor -> data/state slot -> generic registration
-```
+| Item | Status |
+|---|---|
+| registration routine location | High |
+| common helper = `0x274ec8` | High |
+| common runtime-object source = `Image + 0x1a13a20` | High |
+| `need_switch_ssr` registration call = `0x37b3e4` | High |
+| `tran_urgent_gc` registration call = `0x37b484` | High |
+| `detect_charger_type` registration call = `0x37b504` | High |
+| these names are registered controls/attributes | High |
+| implementation callback addresses | Unresolved |
+| `tran_gc_usb_wakelock` registration path | Unresolved |
 
-## Relation to the GC detector
+## Next exact target
 
-The direct stock detector/wrapper path remains:
-
-```text
-Stop 4
-  -> +0x998 = 2 (unless +0x9c0 blocks)
-  -> +0x9f8 = 1
-  -> tran_f2fs_gc
-  -> temporary sbi+0x534 = 3
-  -> f2fs_gc(sbi, sync, true, -1)
-  -> restore gc_mode
-```
-
-Thus `need_switch_ssr` and `tran_urgent_gc` are currently best treated as **vendor control/state interfaces surrounding the proven controller state machine**, not as direct calls in the Stop-4 basic block.
-
-## Remaining binding work
-
-The remaining exact path is:
+The remaining binding problem is now narrowly defined:
 
 ```text
-0x274ec8
-  -> determine descriptor field offsets used for read/show/write callbacks
-  -> trace descriptor indices 9, 19, 27 through those fields
-  -> find all direct loads/stores of the associated BSS/data pointers
-  -> bind the resulting state variables to the detector/wrapper
+runtime object @ Image + 0x1a13a20
+        ↓
+object/list initialized before or during 0x37b2f0
+        ↓
+attribute nodes reached through [object + 0x38]
+        ↓
+show/store/value callback fields
+        ↓
+need_switch_ssr / tran_urgent_gc / detect_charger_type implementation
 ```
 
-Only after that should an implementation name be assigned to `need_switch_ssr`, `tran_urgent_gc`, or `detect_charger_type`.
+The next useful reverse-engineering pass should therefore trace the initialization of `Image + 0x1a13a20` and the fields of the objects reachable through its `+0x38` list. Only that path can produce an evidence-backed implementation address.
