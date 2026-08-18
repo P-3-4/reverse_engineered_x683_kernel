@@ -39,24 +39,24 @@ The source boot image used for the direct binary analysis is:
 
 The complete `boot.img` is not stored in the repository because of GitHub's file-size/upload limitations. Its identity and the relevant extracted evidence are permanently recorded.
 
-## 5. Kernel artifact
+## 5. Kernel artifact — CURRENT VERIFIED STATUS
 
-The user manually uploaded the compressed kernel to `main`:
+The repository path `artifacts/kernel/x683_kernel_compressed.gz` currently **does not contain the claimed kernel binary**. Its latest adding commit (`6176593e36026ac739d5f7890ea723132e9c13a0`) is explicitly titled `Add x683_kernel_compressed.gz placeholder file` and its actual diff is a single text line:
 
-`artifacts/kernel/x683_kernel_compressed.gz`
+`placeholder`
 
-GitHub records this file as 9,640,652 bytes with blob SHA `2aad2f928a7af962831bc0d5cb33df94adf254c0`.
+The current GitHub Contents API reports blob SHA `2aad2f928a7af962831bc0d5cb33df94adf254c0`, but this is a Git blob SHA and does not validate the previously claimed 9,640,652-byte gzip payload. The raw-file fetch also cannot retrieve a gzip payload from this path because the stored object is not the expected binary.
 
-Local extraction from the uploaded boot image produced:
+Therefore the previously recorded values below are **historical extraction evidence, not currently verified repository contents**:
 
-- compressed gzip member: 9,640,652 bytes
-- decompressed ARM64 Image: 26,615,820 bytes
-- compressed gzip SHA-256: `6ddfd017d9ee7152a856f46657f9ddd5287adf69d49cb853f7e747c2b7c18dfd`
-- decompressed Image SHA-256 from that extraction: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
+- claimed compressed member: 9,640,652 bytes
+- claimed compressed SHA-256: `6ddfd017d9ee7152a856f46657f9ddd5287adf69d49cb853f7e747c2b7c18dfd`
+- claimed decompressed ARM64 Image: 26,615,820 bytes
+- claimed decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
 
-IMPORTANT: some older repository boot-image documents report a different compressed-kernel size/hash (`9,755,348`, SHA `670198...`). This inconsistency must be sanity-checked before using those older hashes as canonical. The actual committed kernel artifact in `artifacts/kernel/` is the current canonical binary available from GitHub.
+A separate permanent artifact document records a different kernel-slot size of `0x94dad4` = 9,755,348 bytes. This contradiction remains unresolved.
 
-The extraction method must stop at gzip EOF and must not treat trailing bytes in the kernel slot as additional gzip members.
+**Do not perform further absolute-offset validation against `artifacts/kernel/x683_kernel_compressed.gz` until the actual binary is uploaded/recovered and its SHA-256 is verified.**
 
 ## 6. Permanent binary evidence
 
@@ -130,7 +130,7 @@ The segment-manager correlations are:
 
 The Transsion GC code reaches free-segment accounting through `sbi -> sm_info -> free_info`; dirty victim selection reaches `dirty_info`.
 
-## 9. IMPORTANT ABI CORRECTION — supersedes older docs/source
+## 9. IMPORTANT ABI CORRECTION — CURRENT AUTHORITY
 
 The stock X683 binary **does not use the old 3-argument `f2fs_gc(sbi, sync, background)` prototype** and does not use the later 5-argument force form.
 
@@ -154,14 +154,6 @@ f2fs_gc(sbi, sync, true, -1);
 where `-1` is `NULL_SEGNO`.
 
 Therefore every future X683 source reconstruction must use the four-argument ABI unless new direct evidence disproves it.
-
-Older files that still state the 3-argument ABI are historical and must not be treated as current truth:
-
-- `docs/reverse-engineering/gc-reconstruction.md`
-- `docs/reverse-engineering/f2fs-api-history.md`
-- `fs/f2fs/gc_reconstructed.c`
-
-They should eventually be corrected after the binary/source correlation pass.
 
 ## 10. gc_mode state/policy
 
@@ -348,11 +340,11 @@ The reconstructed `do_garbage_collect` work includes the historical sequence:
 - foreground merged-write submission
 - complete-section accounting
 
-However the current `fs/f2fs/gc_reconstructed.c` is **not build-ready** because its function prototype still uses the obsolete three-argument ABI. It must be corrected to four arguments before integration.
+`fs/f2fs/gc_reconstructed.c` has now been corrected to expose the four-argument X683 ABI. It remains reconstructed/inferred code and is not yet a verified stock-equivalent implementation.
 
 ## 17. Current source status
 
-Repository currently contains reconstructed/inferred F2FS GC source and documentation. It is not yet a verified stock-equivalent build.
+Repository contains reconstructed/inferred F2FS GC source and documentation. It is not yet a verified stock-equivalent build.
 
 Main source areas:
 
@@ -373,35 +365,35 @@ Do not replace evidence-backed offset correlations with guessed struct members u
 6. Transsion controller value 2 feeds the vendor wrapper's URGENT override.
 7. The stock X683 GC ABI is four arguments; this supersedes earlier three-argument notes.
 8. Exact vendor triggers must not be invented from strings alone.
+9. The committed kernel path is currently a placeholder, not a verified gzip binary; do not use its Git blob SHA as a payload SHA-256.
 
 ## 19. Known contradictions / sanity checks required
 
-### Kernel-size/hash contradiction
+### Kernel artifact contradiction — BLOCKING
 
-Some repository documents identify the source boot image as having a 9,755,348-byte compressed kernel and report a compressed-kernel hash `670198...`, while the actual kernel artifact manually uploaded to `artifacts/kernel/` is 9,640,652 bytes and has local extraction hash `6ddfd...`.
+The repository currently stores `artifacts/kernel/x683_kernel_compressed.gz` as a one-line text placeholder, despite older project notes describing a 9,640,652-byte gzip. A separate evidence document identifies the kernel slot as `0x94dad4` = 9,755,348 bytes.
 
-Before doing any further absolute-offset work from the uploaded gzip artifact, verify that the committed gzip is actually the same kernel used to produce the documented offsets and that the boot-image parser did not select a different gzip member/copy. The boot image SHA itself is `a4908a...` in the existing manifest.
+The previously claimed compressed SHA `6ddfd...` and decompressed Image SHA `965138...` therefore cannot currently be reverified from `main`.
 
-This check is mandatory to avoid silently mixing two kernel payloads.
+**Required action:** recover/upload the actual compressed kernel binary to the repository (or another accessible project artifact), then verify its SHA-256 and decompressed Image SHA before doing further absolute-offset validation.
 
 ### Older ABI documents
 
-`gc-reconstruction.md`, `f2fs-api-history.md`, and the header comment in `gc_reconstructed.c` still contain the obsolete three-argument assumption. The direct binary ABI correction document is authoritative and those files should be updated.
+`gc-reconstruction.md`, `f2fs-api-history.md`, and the header comment in `gc_reconstructed.c` previously contained the obsolete three-argument assumption. These have now been corrected to the direct four-argument X683 ABI.
 
 ## 20. Immediate next work
 
-Do this in order:
-
-1. **Sanity-check the committed `x683_kernel_compressed.gz` against the exact boot-image SHA and documented kernel slot.** Resolve the 9,640,652 vs 9,755,348 discrepancy before trusting further absolute offsets.
-2. Decompress the committed gzip and verify the resulting Image SHA against the documented `965138...` hash.
-3. Re-disassemble `0x3503a8`, `0x37ada8`, and `0x377700..0x3779b0` from the canonical Image to make sure all existing evidence corresponds to the same binary.
-4. Correct `fs/f2fs/gc_reconstructed.c` to the four-argument ABI.
-5. Reconstruct the exact `tran_gc_thread_func` around the controller fields.
-6. Resolve the remaining vendor helper/threshold routine at `0x37b5d4`.
-7. Trace charging, USB, framebuffer, wakelock, fragmentation, `tran_urgent_gc`, `need_switch_ssr`, and `detect_charger_type` callers to establish actual vendor triggers.
-8. Match the vendor code against the exact historical F2FS revision before claiming source equivalence.
-9. Reconstruct `__get_victim`, cost-benefit/greedy selection, `last_victim[]`, and dirty-segment operations against the stock binary.
-10. Only after these are consistent, integrate reconstructed C and begin compile/boot validation.
+1. **Recover the actual compressed kernel binary**; the current repository object is only `placeholder`.
+2. Verify the recovered gzip SHA-256 and decompressed Image SHA against the historical claims.
+3. Resolve the 9,640,652 vs 9,755,348 kernel-slot discrepancy against the exact boot-image SHA.
+4. Re-disassemble `0x3503a8`, `0x37ada8`, and `0x377700..0x3779b0` from the canonical Image.
+5. Audit `fs/f2fs/gc_reconstructed.c` for remaining semantic/compile mismatches beyond the corrected ABI.
+6. Reconstruct the exact `tran_gc_thread_func` around the controller fields.
+7. Resolve the remaining vendor helper/threshold routine at `0x37b5d4`.
+8. Trace charging, USB, framebuffer, wakelock, fragmentation, `tran_urgent_gc`, `need_switch_ssr`, and `detect_charger_type` callers to establish actual vendor triggers.
+9. Match the vendor code against the exact historical F2FS revision before claiming source equivalence.
+10. Reconstruct `__get_victim`, cost-benefit/greedy selection, `last_victim[]`, and dirty-segment operations against the stock binary.
+11. Only after these are consistent, integrate reconstructed C and begin compile/boot validation.
 
 ## 21. Method / evidence standard
 
@@ -429,4 +421,4 @@ Start the next chat by reading this file and the following documents before doin
 - `docs/reverse-engineering/bootimg-gc-key-hex.txt`
 - `fs/f2fs/gc_reconstructed.c`
 
-Then perform the kernel-artifact/hash sanity check before continuing the reverse engineering.
+Then recover the actual kernel artifact and perform the kernel-artifact/hash sanity check before continuing the reverse engineering.
