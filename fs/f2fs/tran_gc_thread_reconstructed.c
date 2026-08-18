@@ -13,6 +13,25 @@
 #define TRAN_GC_CTRL_GREEDY 1
 #define TRAN_GC_CTRL_URGENT 2
 
+struct x683_tran_gc_state {
+	u64 cycle;                    /* +0x990 */
+	u32 controller;               /* +0x998 */
+	u8 controller_write_blocked;  /* +0x9c0 */
+	u32 loop_state;               /* +0x9d0 */
+	u32 detector_state;           /* +0x9d4 */
+	u64 repeated_detector_count; /* +0x9d8 */
+	u64 detector_cycles;          /* +0x9e0 */
+	u32 running_max;              /* +0x9f0 */
+	u32 saved_baseline;           /* +0x9f4 */
+	u8 stop_result;               /* +0x9f8 */
+	u32 stop_condition;           /* +0x9fc */
+	u8 cadence_selector;          /* +0xa04 */
+	u8 loop_active;               /* +0xa05 */
+	u8 detector_enabled;          /* +0xa06 */
+	s32 baseline_seg;              /* +0xa08 */
+	u32 baseline_written_seg;      /* +0xa0c */
+};
+
 struct x683_tran_gc_inputs {
 	u32 user_block_count;       /* sbi + 0x408 */
 	u32 log_blocks_per_seg;     /* sbi + 0x3d8 */
