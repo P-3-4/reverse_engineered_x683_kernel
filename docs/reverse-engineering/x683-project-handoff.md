@@ -11,7 +11,7 @@ Work from `main` in `P-3-4/reverse_engineered_x683_kernel`.
 - Target: Infinix X683/H694, MT6768 ARM64, stock Android 10, Linux 4.14.141-era kernel.
 - `boot.img` SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
 - `boot.img`: 33,554,432 bytes.
-- Kernel slot: `0x94dad4`, 9,755,348 bytes.
+- Kernel compressed size: `0x94dad4` bytes at boot image offset `0x800`.
 - Decompressed Image: 26,615,820 bytes.
 - Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
 - Gzip trailing bytes: 114,696.
@@ -113,15 +113,19 @@ scaled += (p < 0);
 stop3 = scaled < reference;
 ```
 
-`0x37b74c+` is generic vendor attribute/control machinery, not additional GC threshold arithmetic.
-
 ## `tran_gc_thread_func` reconstruction
 
 Primary source: `fs/f2fs/tran_gc_thread_reconstructed.c`.
 
-Integrated: detector arming/state gate, state-3 timed wait/recheck, metric collection, Stop 1..5, controller transitions, cadence/baseline handling.
+Integrated:
+- detector arming/state gate;
+- metric collection;
+- Stop 1..5 operand chains and writes;
+- state-3 timed-wait structure;
+- freezer-aware task predicate;
+- `+0x974` event producer/consumer role.
 
-Metric producer correction:
+Metric producers:
 
 ```text
 arming_dirty_segments = sum(dirty_info +0x68 .. +0x7c)
@@ -148,44 +152,84 @@ Stop4 -> +0x998 = 2 unless +0x9c0 blocks; +0x9f8 = 1
 Stop5 -> +0x998 = 2; +0x9f8 = 2
 ```
 
-## State-3 wait/recheck resolution
+## Final state-3 freezer resolution
 
-The stock state-3 sequence is now resolved at the helper level:
+The region `0x377494..0x377570` is now semantically resolved at the kernel/freezer level.
 
 ```text
 +0x9d4 = 3
-+0xd94 -> 0xce58c -> positive-ms-to-jiffies conversion
-0x57554 -> TIF_NEED_RESCHED bit test
-0x9c688 -> wait entry initialization
-0x9c6e8 -> prepare-to-wait / TASK_INTERRUPTIBLE insertion
++0xd94 -> 0xce58c -> timeout conversion
+0x57554 -> scheduler/NEED_RESCHED check
+0x9c688 -> wait-entry initialization
+0x9c6e8 -> prepare-to-wait / TASK_INTERRUPTIBLE
 0x57554 -> scheduler recheck
-0xcc774 -> unresolved vendor/task abort predicate
+0xcc774 -> freezer-aware task eligibility predicate
 0x9c8d0 -> finish_wait
 0x57554 -> final scheduler recheck
-+0x974 -> producer-driven wake/recheck gate
+Image+0x19f0020 -> system_freezing_cnt
+Image+0x19f0024 -> pm_freezing
+Image+0x19f0028 -> pm_nosig_freezing
++0x974 -> vendor event-driven wake/re-entry gate
 metric collection
 ```
 
-`+0x974` is no longer considered unresolved as a storage role. Its producer is the callback-like function at `0x37acf8`:
+### `0x1051a8`
+
+Resolved to `cgroup_freezing(struct task_struct *)`.
+
+Its binary shape is a protected task->cgroup->freezer-state lookup followed by `state & 0x6`, matching the Android 4.14 cgroup freezer predicate.
+
+### `0xcc774`
+
+Resolved as a vendor-modified inverse/eligibility form of `freezing_slow_path()`:
+
+```c
+if (task->flags & (PF_NOFREEZE | PF_SUSPEND_TASK))
+    return false;
+if (task->flags & PF_KSWAPD)
+    return false; /* X683-specific deviation */
+if (pm_nosig_freezing)
+    return false;
+if (cgroup_freezing(task))
+    return false;
+if (!pm_freezing)
+    return false;
+if (task->flags & PF_KTHREAD)
+    return false;
+return true;
+```
+
+The matching Android 4.14 freezer implementation uses `pm_nosig_freezing || cgroup_freezing(p)` and `pm_freezing && !(p->flags & PF_KTHREAD)` in `freezing_slow_path()`. The X683 binary additionally rejects `PF_KSWAPD` instead of using the standard `TIF_MEMDIE` test.
+
+### `+0x20` correction
+
+The previous label `controller-object +0x20` was incorrect.
+
+`x22` in the detector points to `Image+0x19f0000`, so:
+
+```text
+[x22 + 0x20] = system_freezing_cnt
+[x22 + 0x24] = pm_freezing
+[x22 + 0x28] = pm_nosig_freezing
+```
+
+Therefore the detector's `+0x20` check is a direct system-freezer-state gate.
+
+### `+0x974`
+
+Producer at `0x37acf8`:
 
 ```text
 event != 9 -> return
-
 event == 9:
   state == 0 -> +0x974 = 1
   state == 4 -> +0x974 = 0
   other states -> unchanged
 ```
 
-The callback reads `*(event_data + 0x8)`. When auxiliary state `+0x898` exists, it also signals the object at `+0x978` with `(3,1,0)` in both state-changing branches.
+When auxiliary state `+0x898` exists, the callback also signals the object at `+0x978` with `(3,1,0)` on the state-changing branches.
 
-The callback's public/vendor event name and registration binding remain unresolved.
-
-The exact helper `0xcc774` remains unresolved by semantic name. It examines task state and, on one branch, calls `0x1051a8`, which tests bits `0x6` in a field reached through `task + 0x950`.
-
-The controller-object `+0x20` predicate remains unresolved.
-
-`0x1eca60` remains unresolved by semantic name; its body is a generic per-object reference/locking operation.
+Public/vendor event identity remains unresolved.
 
 ## Transsion GC wrapper
 
@@ -199,15 +243,13 @@ controller 1 -> save gc_mode; set 2; f2fs_gc(..., NULL_SEGNO); restore
 controller 2 -> save gc_mode; set 3; f2fs_gc(..., NULL_SEGNO); restore
 ```
 
-Do not conflate controller values with the underlying `gc_mode` values: controller 1 maps to `gc_mode=2`, controller 2 maps to `gc_mode=3`.
+Do not conflate controller values with underlying `gc_mode` values.
 
 ## Stock F2FS GC reconstruction status
 
-`fs/f2fs/gc_reconstructed.c` is an inferred reconstruction, **not recovered proprietary source**. It is currently a scaffold and must not be presented as compile-ready or byte-equivalent.
+`fs/f2fs/gc_reconstructed.c` remains an inferred reconstruction, not recovered proprietary source. It is a scaffold and must not be presented as compile-ready or byte-equivalent.
 
-Important sanity correction already applied: historical 4.14 callers own `gc_mutex` around GC; the reconstructed GC function must not unlock it internally.
-
-Historical Android/common 4.14 sources confirm the four-argument `f2fs_gc()` ABI and normal GC flow: checks, BG→FG escalation, victim selection, migration, merged writes, statistics, repeat/checkpoint.
+Historical Android/common 4.14 sources confirm the four-argument `f2fs_gc()` ABI and caller-owned GC mutex model.
 
 ## Vendor controls
 
@@ -227,9 +269,7 @@ detect_charger_type
   descriptor Image+0x173bf70
 ```
 
-They use common registry `Image+0x1a13a20` and registration path `0x274ea0 -> 0x274dac`.
-
-These are **control/data descriptors**, not proven standalone callback symbols. Do not insert direct calls to those names into the detector without further pointer/data-flow proof.
+These are control/data descriptors, not proven standalone callback functions.
 
 `tran_gc_usb_wakelock` exists as a string but its separate registration/use path is unresolved.
 
@@ -248,44 +288,48 @@ These are **control/data descriptors**, not proven standalone callback symbols. 
 +0x198 accumulated
 ```
 
-Exact X683 member names remain unresolved. Do not blindly transplant historical 4.14 names onto these offsets.
+Exact X683 member names remain unresolved.
 
 ## Current honest project status
 
-Binary-level GC architecture: ~80–85% confidence.
+Binary-level GC architecture: ~85–90% confidence.
 
-Source reconstruction: materially lower; not yet a buildable replacement.
+Source reconstruction: substantial but not final.
+
+Buildability: not established.
+
+Replacement-kernel readiness: not established.
 
 High-confidence completed:
-- boot/Image verification
-- critical F2FS layout/ABI mapping
-- controller semantics
-- Stop 1–5 direct state writes and operand chains
-- recovered threshold arithmetic
-- detector arming predicates
-- state-3 wait helper identification
-- `+0x974` producer and consumer role
-- Transsion wrapper behavior
-- stock-vs-vendor architectural separation
-- vendor-control registration bindings
-- stat_info offset map
+- boot/Image verification;
+- critical F2FS layout/ABI mapping;
+- controller semantics;
+- Stop 1–5 state writes and operand chains;
+- recovered threshold arithmetic;
+- detector arming predicates;
+- state-3 wait helper identification;
+- `cgroup_freezing()` identification at `0x1051a8`;
+- `pm_freezing`, `pm_nosig_freezing`, `system_freezing_cnt` identification;
+- vendor-modified `freezing_slow_path()`-equivalent predicate at `0xcc774`;
+- `+0x974` producer and consumer role;
+- Transsion wrapper behavior;
+- vendor-control registration bindings;
+- stat_info offset map.
 
 Remaining high-value gaps:
 1. public/vendor identity and registration path of the `0x37acf8` event callback;
-2. exact semantic name/body integration for `0xcc774`;
-3. exact meaning of controller-object `+0x20`;
-4. exact semantic identity of `0x1eca60`;
-5. `tran_gc_usb_wakelock` path;
-6. exact stat_info member names;
-7. final byte-accurate kthread scheduler/wakeup wrapper;
-8. full compilation/integration against the correct X683/H694 4.14.141 source base.
+2. exact state-3 control-flow integration around the resolved freezer predicates;
+3. exact semantic identity of `0x1eca60`;
+4. `tran_gc_usb_wakelock` path;
+5. exact stat_info member names;
+6. full exact stock-X683 `gc.c` differential;
+7. compilation/integration against the correct X683/H694 4.14.141 source tree.
 
-## Known sanity-audit commits
+## Recent commits
 
-- `96b4d5916890541b0d39ca31946ee07bfe71869e` — corrected thread scaffold / removed invalid timeout approximation.
-- `c96a942af39a3fc856106475f2a0afa5d8bd9c5c` — audit documentation.
-- `e7da9fa42f29a95a649509b45889a0712da97efd` — source-quality corrections.
-- `53c9df976fd9ef7f1d7a7c614657c159a90393bc` — resolved `+0x974` producer semantics in thread scaffold.
-- `3fd2a50bf6c08b64395c4c7eb1618becbecad033` — documented exact GC wait-flag producer.
+- `799cf3d7131ab0e24237a62e17ad7e5ecd42a117` — final state-3 freezer resolution.
+- `f121afada67d0c8bfacd772277db5718a4adc17b` — semantic freezer predicate reconstruction.
+- `89f35c65d64c6b5243639c497aa7f0ac20b4aa1a` — state-3 exact predicate evidence.
+- `ccdb49883812563f12bd03c296326e9f97edfcd5` — `cc774` final-resolution notes.
 
 Use this file as the canonical continuation point in future chats. Read it from `main` before continuing.
