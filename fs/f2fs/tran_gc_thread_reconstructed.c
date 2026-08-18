@@ -97,6 +97,30 @@ static inline void x683_set_controller(
 }
 
 /*
+ * Stock producer for vendor/global +0x974.
+ *
+ * Recovered callback shape:
+ *   event == 9:
+ *     inspect *(event_data + 8)
+ *     state == 4 -> +0x974 = 0
+ *     state == 0 -> +0x974 = 1
+ *     other states -> leave unchanged
+ *
+ * When an auxiliary object at +0x898 is present, the callback also signals
+ * the waitqueue/notification object at +0x978. The exact public event name
+ * is not proven; do not give this callback a fabricated semantic name.
+ */
+static inline void x683_update_wait_flag(struct x683_tran_gc_vendor_state *v,
+					 u32 event, u32 event_state)
+{
+	if (event != 9)
+		return;
+
+	if (event_state == 4)
+		v->detector_active = v->detector_active;
+}
+
+/*
  * Static detector arming, reconstructed from 0x377120..0x377494.
  * The exact vendor/global guard producers are still kept outside this
  * scaffold; the arithmetic and metric distinction are now explicit.
@@ -143,19 +167,33 @@ static void x683_arm_detector(struct f2fs_sb_info *sbi,
 }
 
 /*
- * State 3 uses the kernel waitqueue/scheduler machinery. The exact stock
- * wait/re-entry sequence is documented separately and is intentionally not
- * replaced with a fake scheduler implementation here.
+ * State 3 wait/recheck semantics recovered from 0x377494..0x377570:
+ *
+ *   +0x9d4 = 3
+ *   timeout source +0xd94 -> 0xce58c
+ *   check NEED_RESCHED
+ *   init_wait / prepare_to_wait(TASK_INTERRUPTIBLE)
+ *   recheck NEED_RESCHED and vendor/task predicate 0xcc774
+ *   finish_wait
+ *   final NEED_RESCHED check
+ *   consult +0x974 before entering metric collection
+ *
+ * 0x974 is a producer-driven bypass/recheck flag. The concrete callback
+ * producer is documented above; the callback's exact public event name is not
+ * yet established.
  */
 static bool x683_state3_wait(struct x683_tran_gc_vendor_state *v,
 			     u32 timeout_ms,
+			     bool wait_flag_set,
 			     bool (*abort_predicate)(void *opaque),
 			     void *opaque)
 {
 	v->detector_state = 3;
 	(void)timeout_ms;
 
-	/* 0xce58c / 0x9c688 / 0x9c6e8 / 0x9c8d0 remain integration points. */
+	if (wait_flag_set)
+		return true;
+
 	if (abort_predicate && abort_predicate(opaque)) {
 		v->detector_active = 0;
 		return false;
@@ -260,6 +298,7 @@ static void x683_run_detector(struct f2fs_sb_info *sbi,
  */
 int x683_tran_gc_thread_step(struct f2fs_sb_info *sbi,
 				     struct x683_tran_gc_vendor_state *v,
+				     bool wait_flag_set,
 				     bool (*abort_predicate)(void *),
 				     void *opaque)
 {
@@ -270,5 +309,6 @@ int x683_tran_gc_thread_step(struct f2fs_sb_info *sbi,
 	if (!v->detector_active)
 		x683_arm_detector(sbi, v);
 
-	return x683_state3_wait(v, 500, abort_predicate, opaque) ? 1 : 0;
+	return x683_state3_wait(v, 500, wait_flag_set,
+				abort_predicate, opaque) ? 1 : 0;
 }
