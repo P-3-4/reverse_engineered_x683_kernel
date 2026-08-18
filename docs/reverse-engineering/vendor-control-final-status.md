@@ -1,57 +1,116 @@
-# X683/H694 vendor GC controls — final status for stages #4/#5
+# X683/H694 vendor GC controls — final binding status
+
+Binary authority: stock X683/H694 Image. This is reconstructed/inferred analysis, not recovered proprietary source.
 
 ## `need_switch_ssr`
 
-- Registered at `0x37af88`.
-- Descriptor/backing object: `Image + 0x173b9d0`.
-- Passed through common registration `0x274ea0 -> 0x274dac`.
-- No direct branch/call from the Stop-4 basic block to a function named `need_switch_ssr`.
-- Stop 4 directly writes controller `+0x998 = 2` when `+0x9c0` permits it.
+Direct registration:
 
-Status: **control/data binding proven; implementation callback not proven**.
+```text
+registration: 0x37af88
+string:      Image + 0x10a6359
+descriptor:  Image + 0x173b9d0
+```
+
+The recovered vendor-state map independently identifies:
+
+```text
+Image + 0x1a139c0 = need_switch_ssr (u8)
+```
+
+The control reaches the common registry/attribute implementation through `0x274ea0 -> 0x274dac`; no unique standalone callback named `need_switch_ssr` is proven.
+
+Status: **backing state bound; callback semantics unresolved**.
 
 ## `tran_urgent_gc`
 
-- Registered at `0x37b068`.
-- Descriptor/backing object: `Image + 0x173bbb0`.
-- Same generic registration/operation framework.
-- Stop 4 does not directly call a function named `tran_urgent_gc`.
-- The proven urgent action is the controller transition consumed later by `tran_f2fs_gc`, which temporarily sets `sbi->gc_mode = 3`.
+Direct registration:
 
-Status: **control/data binding proven; direct callback not proven**.
+```text
+registration: 0x37b068
+string:      Image + 0x10a63ac
+descriptor:  Image + 0x173bbb0
+```
+
+Independent vendor-state mapping gives:
+
+```text
+Image + 0x1a139d0 = tran_urgent_gc (u32)
+```
+
+Again, the named control is a generic registry endpoint, not a proven standalone function.
+
+Status: **backing state bound; callback semantics unresolved**.
 
 ## `detect_charger_type`
 
-- Registered at `0x37b184`.
-- Descriptor/backing object: `Image + 0x173bf70`.
-- Registration is direct, but its consumers are outside the currently resolved GC detector path.
+Direct registration:
 
-Status: **control/data binding proven; runtime consumer unresolved**.
+```text
+registration: 0x37b184
+string:      Image + 0x10a6414
+descriptor:  Image + 0x173bf70
+```
+
+A `detect_charger_type_write` handler is directly present in kallsyms, but the backing storage/consumer is not yet independently bound to a specific recovered global or SBI field.
+
+Status: **registration + write handler proven; runtime storage/consumer unresolved**.
 
 ## `tran_gc_usb_wakelock`
 
-String exists at `Image + 0x10a5ee7` but is not in the contiguous registration sequence containing the three controls above.
-
-The separate registration/use path is therefore not safely assigned.
-
-Status: **unresolved**.
-
-## Architectural conclusion
-
-The evidence supports:
+String:
 
 ```text
-named control
-  → common registry node
-  → per-control backing descriptor/state
-  → generic attribute operation
+Image + 0x10a5ee7
 ```
 
-not:
+This is outside the contiguous three-control registration sequence and is associated with the separate wakeup-source path.
+
+Status: **separate path; implementation chain unresolved**.
+
+## Important controller-label correction
+
+The stock `tran_f2fs_gc()` wrapper at `0x37ada8..0x37ae94` proves:
 
 ```text
-named control
-  → unique standalone function
+controller 0 -> no temporary gc_mode change
+controller 1 -> sbi->gc_mode = 2
+controller 2 -> sbi->gc_mode = 3
 ```
 
-Accordingly, the reconstructed `tran_gc_thread_func()` must use the directly proven controller/descriptor values rather than invented calls to these names.
+and the vendor `gc_mode` values are:
+
+```text
+2 = URGENT
+3 = GREEDY
+```
+
+Therefore the detector's direct Stop-4/Stop-5 writes of:
+
+```text
++0x998 = 2
+```
+
+must be recorded as **controller-state value 2**, not automatically called "urgent". The resulting wrapper behavior is a temporary `gc_mode = 3` selection.
+
+Older project notes that called this store an "urgent" transition are superseded by the binary-proven controller mapping.
+
+## Architecture
+
+The recovered model is:
+
+```text
+/proc/tran_gc_debug control
+        -> generic registry node
+        -> common operation/context
+        -> per-control descriptor/private data
+        -> vendor state/side effect
+```
+
+It is **not**:
+
+```text
+control name -> unique standalone GC function
+```
+
+No reconstructed GC path should invent direct calls to these control names without a separate binary call/read/write proof.
