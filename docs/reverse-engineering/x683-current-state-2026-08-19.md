@@ -31,11 +31,11 @@ sm_info + 0xA0              = dcc_info
 sizeof(discard_cmd_control) = 0x20B0
 ```
 
-The dirty counters at `dirty_info + 0x68..0x7c` are the first six entries of `nr_dirty[8]`. Earlier hypotheses that these were vendor counters were withdrawn during consumer proof.
+The dirty counters at `dirty_info + 0x68..0x7c` are the first six entries of `nr_dirty[8]`; earlier vendor-counter hypotheses were withdrawn during consumer proof.
 
-## Stock X683 GC reconstruction already completed
+## Stock GC reconstruction
 
-The stock X683 collector uses the four-argument ABI:
+The X683 collector uses the proven four-argument ABI:
 
 ```c
 f2fs_gc(sbi,
@@ -44,31 +44,25 @@ f2fs_gc(sbi,
         NULL_SEGNO);
 ```
 
+`f2fs_gc` is at `0xffffff92d0dd03a8`.
+
 The completed victim-selection/migration phase established that X683 preserves the stock 4.14-era algorithmic core:
 
-- `get_victim_by_default()` remains stock-like;
+- `get_victim_by_default()` remains stock-like at `0xffffff92d0dd2e74`;
 - victim filtering remains stock-like;
-- SSR/greedy/cost-benefit scoring remains stock-like;
+- SSR/greedy/CB scoring remains stock-like;
 - age/mtime cost-benefit remains stock-like;
 - `f2fs_need_SSR()` remains stock-like, including `gc_mode == 3` returning true;
 - node/data migration remains stock-like;
 - no vendor replacement migration engine was found.
 
-See:
+Detailed prior phase:
 
 `docs/reverse-engineering/x683-f2fs-victim-selection-migration-delta-2026-08-19.md`
 
-## Transsion GC policy/state-machine phase — completed 2026-08-19
+## Transsion GC policy/state-machine phase
 
-The remaining directly visible Transsion policy layer is now reconstructed to the level supported by the X683 binary.
-
-Detailed phase document:
-
-`docs/reverse-engineering/x683-transsion-gc-policy-state-machine-2026-08-19.md`
-
-### Core architectural result
-
-The vendor delta is a controller around the stock collector:
+The vendor subsystem is a controller around the stock collector:
 
 ```text
 external event / explicit request
@@ -81,239 +75,220 @@ external event / explicit request
         -> stock victim selection / scoring / migration
 ```
 
-### `tran_do_f2fs_gc()` — exact policy
+Detailed phase:
 
-Address:
+`docs/reverse-engineering/x683-transsion-gc-policy-state-machine-2026-08-19.md`
 
-`0xffffff92d0dfada8`
+### `tran_do_f2fs_gc()`
 
-Only direct caller:
+Address: `0xffffff92d0dfada8`.
 
-`tran_gc_thread_func + 0x544` at `0xffffff92d0df7414`.
-
-Persistent vendor configuration:
+Only direct caller: `tran_gc_thread_func +0x544` at `0xffffff92d0df7414`.
 
 ```text
-global + 0x998 = gc_type
+global +0x990 = GC invocation counter
+
+global +0x998 = persistent gc_type
+
+0 -> preserve sbi+0x534
+1 -> temporary sbi+0x534 = 2
+2 -> temporary sbi+0x534 = 3
 ```
+
+For `gc_type != 0`, the old `gc_mode` is saved and restored after `f2fs_gc()` returns. The stock call uses `sync = bit14(sbi+0x4b8)`, `background = true`, `segno = -1`.
 
 `gc_type_write()` accepts only values `0..2`.
 
-Exact mapping:
+### Worker
+
+`tran_gc_thread_func()` is at `0xffffff92d0df6ed0`.
+
+Direct vendor calls:
 
 ```text
-gc_type 0 -> call f2fs_gc() with existing sbi->gc_mode
-
-gc_type 1 -> save sbi->gc_mode; set sbi->gc_mode = 2;
-              call f2fs_gc(); restore old mode
-
-gc_type 2 -> save sbi->gc_mode; set sbi->gc_mode = 3;
-              call f2fs_gc(); restore old mode
++0x234 -> tran_has_enough_free_segment
++0x544 -> tran_do_f2fs_gc
 ```
 
-The stock call remains four-argument and uses `background=true`, `segno=NULL_SEGNO`, and mount-option bit 14 as `sync`.
+The worker uses a waitqueue at `+0x978`, a 250 ms normal polling timeout, urgent state at `+0x9d0`, charger gating, free-segment policy, dirty/pressure thresholds, wakelock checks, `mutex_trylock(sbi+0x508)`, and post-GC `f2fs_balance_fs_bg()` paths.
 
-### Transsion worker
-
-`tran_gc_thread_func()` at `0xffffff92d0df6ed0` is a genuine vendor control worker. Directly proven behavior includes:
-
-- `set_freezable()` and kthread-stop/freezer checks;
-- waitqueue use through `global + 0x978`;
-- a 250 ms polling timeout in the normal wait loop;
-- urgent-GC state at `global + 0x9d0`;
-- charger-type gating on the urgent/special path;
-- the vendor free-segment predicate;
-- dirty/segment-pressure threshold tests;
-- wakelock admission checks;
-- GC-mutex `mutex_trylock(sbi + 0x508)` before calling `tran_do_f2fs_gc()`;
-- `f2fs_balance_fs_bg()` after the vendor wrapper returns;
-- worker lifecycle counters and phase/status telemetry.
-
-### `tran_has_enough_free_segment()`
-
-Address:
-
-`0xffffff92d0dfb5d4`
-
-This is a genuine vendor free-space predicate, not the stock `has_not_enough_free_secs()` check.
-
-Directly proven elements:
-
-- `U = user_block_count >> log_blocks_per_seg`;
-- unresolved SIT field at `sit + 0x10` is converted to segment units;
-- `F = free_info + 0x04`;
-- `R = sm_info + 0x60` (`reserved_segments`);
-- row selector is `max(global+0x890, global+0x894)`;
-- first table:
-  `[2048, 3072, 4096, 4096, 100, 100, 100, 80]`;
-- second table:
-  `[80, 80, 80, 70, 70, 70, 60, 60]`;
-- first and second threshold gates both compare `F-R` against percentage-derived thresholds;
-- divide-by-100 reciprocal arithmetic is visible in the binary.
-
-Direct callers:
+`tran_has_enough_free_segment()` is at `0xffffff92d0dfb5d4` and uses:
 
 ```text
-tran_gc_thread_func + 0x234
-has_enough_free_seg_read + 0x40
+selector = max(global+0x890, global+0x894)
+A = [2048, 3072, 4096, 4096, 100, 100, 100, 80]
+B = [80, 80, 80, 70, 70, 70, 60, 60]
 ```
 
-### `is_f2fs_fragmentation()` — corrected conclusion
+It uses user-segment arithmetic from `sbi+0x408` and `sbi+0x3d8`, free segments, reserved segments, and an unresolved SIT quantity at `sit_info+0x10`.
 
-Address:
+The worker's direct threshold ladder contains approximately 40%, 351, 25%, 13%, and 27% tests. Passing all writes `+0xa00=1` and `+0xa04=1`; failure writes `+0xa00=2`.
 
-`0xffffff92d0dfb580`
+`is_f2fs_fragmentation()` at `0xffffff92d0dfb580` computes/logs fragmentation and returns zero. No direct BL caller was found; it is not proven to be an active urgency gate.
 
-The binary computes a fragmentation percentage from free segments and the user segment population, logs it, and then returns `0`.
+## Complete integration result — 2026-08-19 deep pass
 
-A full direct-BL scan found no direct caller. Therefore this function is currently proven as a diagnostic/proc-oriented fragmentation calculation, not as a direct boolean urgency gate.
-
-No evidence currently shows fragmentation changing the stock victim score.
-
-### Event/control inputs
-
-USB/charger and display events are genuinely involved in worker policy:
-
-- `usb_charge_event()` can create or stop the Transsion worker;
-- `fb_event()` handles `FB_EVENT_BLANK` and wakes the worker on blank/unblank transitions;
-- charger type can gate the urgent/special worker path;
-- wakelock state can gate admission before GC.
-
-These event callbacks do not directly replace victim selection and do not directly prove a permanent `gc_mode` write.
-
-### Urgent GC controls
-
-`tran_urgent_gc_read()` / `tran_urgent_gc_write()` expose and control `global + 0x9d0`.
-
-A nonzero write enables the urgent state and creates the worker if inactive. A zero write clears urgent state and stops the worker if active.
-
-`need_switch_ssr_read()` / `need_switch_ssr_write()` expose the inverse of `global + 0x9c0`; their binary behavior is documented in the phase document without assigning an unproven internal enum name.
-
-## Vendor state context
-
-The exact formal C type and total size of the vendor global state are not proven. The binary nevertheless establishes a live state context containing at least:
+The complete direct ARM64 `BL` scan establishes:
 
 ```text
-+0x898  worker active
-+0x8a0  f2fs_sb_info *
-+0x8a8  task_struct *
-+0x8b8  wakeup source
-+0x970  charger-detection state
-+0x974  framebuffer state
-+0x978  waitqueue
-+0x990  GC invocation counter
-+0x998  gc_type (0..2)
-+0x9a0  post-GC counter
-+0x9c0  inverse need_switch_ssr flag
-+0x9d0  urgent-GC flag
-+0x9d4  worker phase
-+0x9e0  thread-create count
-+0x9e8  thread-destroy count
-+0x9f0  free-segment metric
-+0x9f4  startup segment/dirty metric
-+0x9f8  vendor telemetry/type state
-+0x9fc  vendor status state
-+0xa00  capacity/fragmentation state
-+0xa04  positive threshold-trigger byte
-+0xa05  wakelock/detect gate
-+0xa06  post-threshold continuation flag
-+0xa08  remembered metric
-+0xa0c  remembered metric
-+0xa10  last segment metric
-+0xa18  remembered GC/delta value
-+0xa20  proc directory pointer
+f2fs_start_gc_thread +0xd8 -> tran_gc_init
+f2fs_stop_gc_thread  +0x18 -> tran_gc_stop
+tran_gc_thread_func  +0x234 -> tran_has_enough_free_segment
+tran_gc_thread_func  +0x544 -> tran_do_f2fs_gc
+has_enough_free_seg_read +0x40 -> tran_has_enough_free_segment
+tran_do_f2fs_gc +0x58/+0x94/+0xc4 -> f2fs_gc
 ```
 
-No guessed formal struct declaration should replace this offset table until more binary evidence appears.
+`gc_thread_create` creates `tran_gc_thread_func` through the kthread API; event/proc handlers such as `usb_charge_event`, `fb_event`, `tran_urgent_gc_write`, `gc_type_write`, and `need_switch_ssr_write` are callback/proc-op paths rather than ordinary direct BL callers.
 
-## Policy model
+### Hidden downstream vendor modification check
 
-The final reconstructed model is:
+From `tran_do_f2fs_gc()` into `f2fs_gc()`, victim selection, node/data migration, segment freeing, retry and checkpoint cleanup, no downstream `tran_*` call target was found.
+
+Therefore the previously stated vendor/stock boundary is strengthened:
 
 ```text
-external subsystem/event
-        |
-        v
-Transsion worker state
-        |
-        +-- urgent flag
-        +-- charger / USB state
-        +-- framebuffer wakeups
-        +-- free-segment predicate
-        +-- dirty/segment threshold ladder
-        +-- wakelock admission
-        +-- retry/timing/delta state
-        |
-        v
-GC admission / worker scheduling
-        |
-        v
-persistent gc_type 0..2
-        |
-        v
-tran_do_f2fs_gc()
-        |
-        +-- temporary gc_mode 2 or 3 when requested
-        |
-        v
-stock f2fs_gc()
-        |
-        +-- stock victim filtering
-        +-- stock SSR/greedy/CB scoring
-        +-- stock age/mtime
-        +-- stock migration
+Transsion policy/state
+        -> tran_do_f2fs_gc
+        -> stock f2fs_gc
+        -> stock victim selection
+        -> stock migration/accounting
 ```
 
-## Genuine vendor delta versus stock behavior
+Logical helpers such as `__get_victim()`, `do_garbage_collect()`, `gc_data_segment()`, and `gc_node_segment()` are not preserved as standalone kallsyms functions in this image and must not be assigned fabricated addresses.
 
-### Vendor-owned / directly proven
+## `f2fs_sb_info` integration
 
-- worker lifetime and wake/sleep policy;
-- urgent-GC control;
+High-confidence fields used by this phase:
+
+```text
++0x80   sm_info *
++0x3d8  log_blocks_per_seg
++0x3dc  blocks_per_seg
++0x3e0  segs_per_sec
++0x408  user_block_count
++0x428  reserved_blocks
++0x430  current_reserved_blocks
++0x438  unusable_block_count
++0x440  nquota_files
++0x4b8  mount_opt.opt
++0x508  gc_mutex
++0x534  gc_mode
++0x538  next_victim_seg[0]
++0x53c  next_victim_seg[1]
++0x560  max_victim_search
++0x564  migration_granularity
++0x568  stat_info *
+```
+
+Runtime pointer graph:
+
+```text
+sbi + 0x80
+   -> sm_info
+      +0x00 -> sit_info
+      +0x08 -> free_info
+      +0x10 -> dirty_info
+      +0x60 -> reserved_segments
+      +0x98 -> flush_cmd_control
+      +0xa0 -> discard_cmd_control
+```
+
+## Vendor global-state map
+
+No formal C struct is asserted. Proven/offset-backed fields include:
+
+```text
++0x890/+0x894 free-policy selectors
++0x898 worker active
++0x8a0 sbi pointer
++0x8a8 task pointer
++0x8b0/+0x8b8 wakeup-source context
++0x968 wakelock/detect control
++0x970 charger control
++0x974 framebuffer state
++0x978 waitqueue
++0x990 GC count
++0x998 gc_type
++0x9a0 post-GC count
++0x9b0/+0x9b8 retry/special-path counters
++0x9c0 inverse SSR flag
++0x9c8 remembered retry/state
++0x9d0 urgent GC
++0x9d4 worker phase
++0x9d8 remembered state
++0x9e0 create count
++0x9e8 destroy count
++0x9f0 free metric
++0x9f4 startup metric
++0x9f8 type state
++0x9fc status state
++0xa00 capacity/fragmentation decision state
++0xa04 threshold-hit byte
++0xa05 wakelock/detect gate
++0xa06 continuation
++0xa08/+0xa0c remembered metrics
++0xa10 last metric
++0xa18 remembered GC/delta
++0xa20 proc directory
+```
+
+## Genuine vendor delta
+
+Directly proven vendor-owned behavior:
+
+- worker lifetime and scheduling;
+- urgent GC control;
 - charger/USB and framebuffer integration;
 - wakelock admission;
 - free-segment threshold policy;
-- dirty/segment trigger thresholds;
-- `gc_type` configuration;
+- dirty/segment pressure ladder;
+- persistent `gc_type` configuration;
 - temporary `gc_mode` override;
-- vendor state/telemetry/proc surface.
+- vendor proc/state telemetry.
 
-### Stock / directly retained
+Directly retained stock behavior:
 
 - victim filtering;
-- victim scoring;
-- SSR selector;
-- age/mtime cost-benefit;
+- SSR/greedy/cost-benefit scoring;
+- age/mtime scoring;
 - node/data migration;
 - stock retry/checkpoint architecture;
 - four-argument `f2fs_gc()` ABI.
 
-### Unresolved
+Disproven/not found:
 
-- exact formal vendor state-structure declaration/size;
-- exact source-level names for some internal telemetry fields;
-- exact enum/string names for every proc-backed state field;
-- exact source member name of the SIT field at `+0x10` used by the vendor free/fragmentation helpers;
-- possible indirect callback usage of `is_f2fs_fragmentation()`.
+- separate vendor victim scorer;
+- separate vendor migration engine;
+- direct fragmentation urgency gate;
+- permanent vendor `gc_mode` mutation;
+- downstream vendor GC helper between wrapper and stock migration.
 
-## Repository / branch state
+## Source baseline
 
-Canonical branch:
+The supplied Image identifies:
 
-`kernel-reconstruction-current`
+```text
+Linux version 4.14.141+
+Android clang 9.0.3
+Fri Nov 5 15:56:25 CST 2021
+CONFIG_MTK_PLATFORM="mt6768"
+CONFIG_F2FS_TRAN_GC=y
+```
 
-The active reconstruction is kept on this branch. No new exploratory branch was created for this phase.
+The exact Transsion source git revision is not proven by the supplied binary. Public Android/Linux 4.14 F2FS sources are comparison/naming baselines only; binary evidence wins where prototypes or structure details differ.
 
-Historical/archive branch retained by project policy:
+## Remaining genuinely unresolved questions
 
-`archive/reconstruction-f2fs-balance-delta-2026-08-19`
+1. Formal vendor global-state C declaration and total size.
+2. Exact source member names for several vendor offsets.
+3. Exact historical C member at `sit_info +0x10` used by the vendor free-space helper.
+4. Exact indirect proc-op/event callback container layouts.
+5. Exact vendor source git revision behind `4.14.141+`.
+6. Exact standalone addresses for logical helpers that are inlined.
 
-`main` remains the repository baseline.
-
-The prior exploratory GC/reconstruction branches are not part of the active reconstruction path.
+These unresolved items do not currently weaken the proven Transsion-to-stock GC boundary.
 
 ## Next phase
 
-Do not reopen the completed victim-selection/migration phase unless new binary evidence contradicts it.
-
-Proceed to the remaining X683 F2FS integration/layout reconstruction, using the now-completed Transsion policy/state-machine model as the boundary between vendor scheduling policy and stock collector internals.
+Proceed to the broader remaining X683 F2FS integration/layout reconstruction: adjacent `f2fs_sb_info` fields, checkpointing, segment allocation, discard/flush paths, and remaining pointer/lock relationships. Do not reopen the completed GC victim-selection/migration or Transsion policy phases unless new binary evidence contradicts them.

@@ -5,18 +5,17 @@
 Direct X683 binary evidence proves that the stock GC call uses the four-argument form:
 
 ```c
-f2fs_gc(
-    sbi,
-    (sbi->mount_opt.opt >> 14) & 1,
-    true,
-    NULL_SEGNO);
+f2fs_gc(sbi,
+        (sbi->mount_opt.opt >> 14) & 1,
+        true,
+        NULL_SEGNO);
 ```
 
 The wrapper at `tran_do_f2fs_gc()` supplies the fourth argument as `NULL_SEGNO` (`-1`). The obsolete three-argument description is superseded.
 
 ## Stock state machine
 
-The X683 `f2fs_gc()` preserves the historical 4.14 F2FS control structure:
+The stock X683 `f2fs_gc()` preserves the historical 4.14 F2FS control structure:
 
 1. validate filesystem/checkpoint state;
 2. determine foreground/background mode;
@@ -79,167 +78,115 @@ and otherwise performs the normal stock free-section threshold logic.
 
 ## Transsion policy/state-machine boundary
 
-The remaining vendor-specific GC layer has now been reconstructed in detail in:
+The remaining vendor-specific GC layer is reconstructed in:
 
 `docs/reverse-engineering/x683-transsion-gc-policy-state-machine-2026-08-19.md`
 
-### `tran_do_f2fs_gc()`
+The vendor controller performs scheduling/admission, free-space and threshold policy, wakelock/charger/framebuffer integration, and temporary `gc_mode` selection. It does not replace victim scoring or migration.
 
-Address:
+## Exact `tran_do_f2fs_gc()` boundary
 
-`0xffffff92d0dfada8`
+Address: `0xffffff92d0dfada8`.
 
-Exact persistent vendor configuration:
+Direct caller: `tran_gc_thread_func +0x544` at `0xffffff92d0df7414`.
 
-```text
-global + 0x998 = gc_type
-```
-
-Exact mapping:
+The wrapper performs:
 
 ```text
-gc_type 0 -> do not change sbi->gc_mode
+global +0x990++
+read global +0x998 (gc_type)
 
-gc_type 1 -> temporarily set sbi->gc_mode = 2
+0: f2fs_gc(sbi, bit14(sbi+0x4b8), true, -1)
 
-gc_type 2 -> temporarily set sbi->gc_mode = 3
+1: save sbi+0x534; set 2; f2fs_gc(...); restore
+2: save sbi+0x534; set 3; f2fs_gc(...); restore
+
+global +0x9a0++
 ```
 
-The old `gc_mode` is saved before the override and restored after `f2fs_gc()` returns.
-
-This proves that Transsion changes **when and under which existing stock mode the collector runs**, rather than replacing victim scoring or migration.
-
-### `tran_gc_thread_func()`
-
-Address:
-
-`0xffffff92d0df6ed0`
-
-Direct vendor calls proven in the worker:
-
-```text
-tran_gc_thread_func + 0x234 -> tran_has_enough_free_segment
-tran_gc_thread_func + 0x544 -> tran_do_f2fs_gc
-```
-
-The worker uses:
-
-- a waitqueue at global `+0x978`;
-- a 250 ms scheduling timeout in the main wait loop;
-- urgent state at `+0x9d0`;
-- charger-type gating;
-- free-segment policy;
-- dirty/segment threshold tests;
-- wakelock admission checks;
-- `mutex_trylock(sbi + 0x508)` before entering vendor GC;
-- post-call `f2fs_balance_fs_bg()` and superblock write-section cleanup;
-- phase/counter/telemetry state spanning `+0x990..+0xa20`.
-
-### `tran_has_enough_free_segment()`
-
-Address:
-
-`0xffffff92d0dfb5d4`
-
-The vendor helper is a two-stage threshold predicate based on:
-
-```text
-user_block_count >> log_blocks_per_seg
-free_segments - reserved_segments
-unresolved sit_info + 0x10 field
-threshold selector max(global+0x890, global+0x894)
-```
-
-with the exact static tables:
-
-```text
-[2048, 3072, 4096, 4096, 100, 100, 100, 80]
-[80, 80, 80, 70, 70, 70, 60, 60]
-```
-
-This is not a replacement for the stock free-section test.
-
-### `is_f2fs_fragmentation()`
-
-Address:
-
-`0xffffff92d0dfb580`
-
-The function computes/logs fragmentation but returns zero. A full direct-BL scan found no direct caller. It is therefore not currently proven to be an active boolean GC urgency gate.
-
-### Urgent GC and external events
-
-`tran_urgent_gc_read/write()` expose/control global `+0x9d0`. A nonzero write enables urgent state and creates the worker if it is inactive; zero stops the worker.
-
-`usb_charge_event()` can create/stop the worker based on charger events and charger type.
-
-`fb_event()` handles framebuffer blank/unblank and wakes the worker through `+0x978`.
-
-Wakelock status is checked by the worker before admission to one of the GC paths.
+The `gc_type` write path accepts only `0..2`.
 
 ## Caller/callee graph
 
 ```text
-f2fs_start_gc_thread
+f2fs_start_gc_thread +0xd8
     -> tran_gc_init
 
-f2fs_stop_gc_thread
+f2fs_stop_gc_thread +0x18
     -> tran_gc_stop
 
-tran_gc_thread_func
+tran_gc_thread_func +0x234
     -> tran_has_enough_free_segment
+
+tran_gc_thread_func +0x544
     -> tran_do_f2fs_gc
 
-has_enough_free_seg_read
+has_enough_free_seg_read +0x40
     -> tran_has_enough_free_segment
 
-gc_thread_create / tran_urgent_gc_write / usb_charge_event
-    -> tran_gc_thread_func through kthread creation
-
-fb_event
-    -> wake vendor waitqueue
-
-stock gc_thread_func
-    -> should_do_origin_gc
+tran_do_f2fs_gc +0x58/+0x94/+0xc4
+    -> f2fs_gc
 ```
 
-No direct vendor migration helper appears between `tran_do_f2fs_gc()` and the stock `f2fs_gc()` call.
+Callback/event handlers such as `usb_charge_event`, `fb_event`, and `tran_urgent_gc_write` are reached through registration/event paths rather than ordinary direct `BL` calls.
+
+## Hidden downstream modification result
+
+A complete direct ARM64 `BL` target scan of the relevant X683 Image region found no `tran_*` target in the downstream path from `f2fs_gc()` to victim selection, node/data migration, freeing, retry, or checkpoint handling.
+
+Therefore no downstream vendor replacement collector is proven.
+
+The following are logical/source-correlated boundaries rather than standalone X683 symbols:
+
+```text
+__get_victim
+do_garbage_collect
+gc_data_segment
+gc_node_segment
+```
+
+They are inlined or otherwise not preserved as independent kallsyms symbols in this image.
 
 ## Vendor state context
 
-The binary proves a global vendor state context containing at least:
+The binary proves a vendor state context containing at least:
 
 ```text
-+0x898  worker active flag
-+0x8a0  sbi pointer
-+0x8a8  task pointer
-+0x8b8  wakeup source
-+0x970  charger state/control
-+0x974  framebuffer state
-+0x978  waitqueue
-+0x990  GC call counter
-+0x998  gc_type 0..2
-+0x9a0  post-GC counter
-+0x9c0  inverse SSR flag
-+0x9d0  urgent-GC flag
-+0x9d4  worker phase
-+0x9e0  thread-create count
-+0x9e8  thread-destroy count
-+0x9f0  free-segment metric
-+0x9f4  startup metric
-+0x9f8  telemetry/type state
-+0x9fc  status state
-+0xa00  capacity/fragmentation state
-+0xa04  positive threshold-trigger byte
-+0xa05  wakelock/detect gate
-+0xa06  continuation flag
++0x890/+0x894 free-policy selectors
++0x898 worker active
++0x8a0 sbi pointer
++0x8a8 task pointer
++0x8b0/+0x8b8 wakeup-source context
++0x968 wakelock/detect control
++0x970 charger control
++0x974 framebuffer state
++0x978 waitqueue
++0x990 GC count
++0x998 gc_type
++0x9a0 post-GC count
++0x9b0/+0x9b8 retry/special-path counters
++0x9c0 inverse SSR flag
++0x9c8 remembered retry/state
++0x9d0 urgent GC
++0x9d4 phase
++0x9d8 remembered state
++0x9e0 create count
++0x9e8 destroy count
++0x9f0 free metric
++0x9f4 startup metric
++0x9f8 type state
++0x9fc status state
++0xa00 capacity/fragmentation decision state
++0xa04 threshold-hit byte
++0xa05 wakelock/detect gate
++0xa06 continuation
 +0xa08/+0xa0c remembered metrics
-+0xa10  last metric
-+0xa18  remembered GC/delta value
-+0xa20  proc directory pointer
++0xa10 last metric
++0xa18 remembered GC/delta
++0xa20 proc directory
 ```
 
-The formal C struct name/size remains unresolved and should not be guessed.
+The formal vendor C structure and total size remain unresolved.
 
 ## Migration result
 
@@ -259,8 +206,6 @@ No Transsion `tran_*` migration helper was found in the core migration loop by d
 
 ## Final conclusion
 
-The complete X683 GC architecture is:
-
 ```text
 Transsion events / state
         -> vendor worker admission
@@ -273,6 +218,7 @@ Transsion events / state
              -> stock SSR/greedy/CB scoring
              -> stock age/mtime scoring
              -> stock node/data migration
+             -> stock retry/checkpoint/cleanup
 ```
 
-The remaining uncertainty is concentrated in exact vendor field names/struct layout and a small number of indirect callback relationships, not in the existence of a hidden vendor replacement collector.
+The remaining uncertainty is concentrated in exact vendor field names/struct layout, some indirect callback container layouts, and the exact vendor source git revision. The existence of a hidden vendor replacement collector is not supported by the X683 evidence.
