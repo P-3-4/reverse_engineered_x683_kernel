@@ -2,34 +2,159 @@
 
 ## ABI match
 
-The recovered X683 stock call site is equivalent to:
+Direct X683 binary evidence proves that the stock GC call uses the four-argument form:
 
 ```c
-f2fs_gc(sbi, sync, true);
+f2fs_gc(
+    sbi,
+    (sbi->mount_opt.opt >> 14) & 1,
+    true,
+    NULL_SEGNO);
 ```
 
-Historical F2FS confirms that this three-argument form is a real 4.14-era API. A 2016 upstream change explicitly changed `f2fs_gc(sbi, sync)` to `f2fs_gc(sbi, sync, true)` and added the `background` parameter. The later API added a victim-segment argument, so that later prototype is not used as the X683 target ABI.
+The wrapper at `tran_do_f2fs_gc()` directly supplies the fourth argument as `NULL_SEGNO` (`-1`). The obsolete three-argument description that was present in this document is superseded.
 
-## Reconstructed state machine
+The X683 target is therefore:
 
-1. `gc_type = sync ? FG_GC : BG_GC`.
-2. Validate `SB_ACTIVE` and checkpoint error state.
-3. For BG_GC with insufficient free sections, checkpoint prefree segments first.
-4. Promote BG_GC to FG_GC if free sections remain insufficient.
-5. Reject BG_GC when `background == false`; this preserves the historical `f2fs_balance_fs()` critical-path behavior.
-6. Select a victim through `__get_victim()` under the segment-manager victim-selection path.
-7. Migrate the victim with `do_garbage_collect()`.
-8. Count a freed section only when FG_GC frees all `segs_per_sec` segments.
-9. Clear `cur_victim_sec` after foreground collection.
-10. For asynchronous/background operation, repeat GC while free sections remain insufficient.
-11. Run a checkpoint after foreground GC in the asynchronous path.
-12. Reset `SIT_I(sbi)->last_victim[ALLOC_NEXT]` before returning.
-13. Release the GC inode list.
-14. For synchronous GC, return success only if at least one complete section was freed; otherwise return `-EAGAIN`.
+```c
+f2fs_gc(sbi, sync, background, segno);
+```
 
-## X683 layout correlation
+with the Transsion caller using `background = true` and `segno = NULL_SEGNO`.
 
-The recovered layout already establishes:
+## Reconstructed stock state machine
+
+The X683 `f2fs_gc()` preserves the historical 4.14 F2FS control structure:
+
+1. validate the filesystem/checkpoint state;
+2. determine foreground/background GC mode;
+3. handle prefree/free-section pressure and GC promotion;
+4. reject background GC in paths where background collection is disallowed;
+5. select a victim through the stock `__get_victim()` / `get_victim_by_default()` path;
+6. migrate the selected victim with the stock section/node/data migration engine;
+7. account freed segments/sections and vendor/statistics counters;
+8. perform the GC-more/retry logic;
+9. checkpoint/cleanup as required;
+10. reset victim bookkeeping and release the GC inode list.
+
+The logical `do_garbage_collect()` and `gc_data_segment()` bodies are heavily inlined into the X683 `f2fs_gc()` function, but their structure matches the historical 4.14 implementation.
+
+## Victim-selection result
+
+The completed deep pass establishes that the stock X683 victim selector itself is not replaced by a Transsion algorithm.
+
+`get_victim_by_default()` remains a standalone function at `0xffffff92d0dd2e74` and retains the historical victim-selection structure:
+
+- dirty-list locking and policy setup;
+- SSR/LFS policy distinction;
+- `max_victim_search` limiting;
+- current-victim and next-victim handling;
+- SIT validity/checkpoint filtering;
+- section-level candidate filtering;
+- minimum-cost selection.
+
+The X683 search-cap condition directly uses:
+
+```text
+sbi + 0x534 = gc_mode
+sbi + 0x560 = max_victim_search
+```
+
+and leaves the search uncapped when the urgent-mode value `3` is active.
+
+## Victim scoring result
+
+The X683 scoring path preserves the historical F2FS cases:
+
+```text
+SSR      -> ckpt_valid_blocks
+GREEDY   -> valid-block cost / segment-type weighting
+CB       -> age/mtime cost-benefit
+```
+
+The CB calculation directly uses:
+
+```text
+SIT entry +0x20 = mtime
+sit_info +0x88  = min_mtime
+sit_info +0x90  = max_mtime
+sbi +0x3d8      = log_blocks_per_seg
+```
+
+and computes the same utilization, age, and final cost formula as historical 4.14 F2FS. No vendor-specific age or cost formula was found.
+
+## SSR result
+
+`f2fs_need_SSR()` is at `0xffffff92d0de58f8`.
+
+Its behavior remains stock-like, including:
+
+```text
+if LFS option is active -> false
+if sbi + 0x534 == 3     -> true
+otherwise               -> free-section threshold test
+```
+
+The X683 threshold uses the same reserved/dirty/free segment relationships as the historical 4.14 F2FS implementation. The `gc_mode == 3` shortcut is therefore an existing stock urgent-mode semantic exposed by the vendor wrapper.
+
+## Transsion-specific boundary
+
+The genuine Transsion modification is outside the victim scoring loop.
+
+`tran_do_f2fs_gc()` at `0xffffff92d0dfada8`:
+
+```c
+++global[0x990];
+cfg = global[0x998];
+
+if (cfg == 0) {
+    ret = f2fs_gc(sbi, (sbi->mount_opt.opt >> 14) & 1,
+                  true, NULL_SEGNO);
+} else {
+    old_mode = sbi->gc_mode;
+    sbi->gc_mode = (cfg == 2) ? 3 : 2;
+    ret = f2fs_gc(sbi, (sbi->mount_opt.opt >> 14) & 1,
+                  true, NULL_SEGNO);
+    sbi->gc_mode = old_mode;
+}
+
+++global[0x9a0];
+```
+
+This changes the **mode and entry policy** of the stock collector, not the underlying victim-score equations.
+
+For `gc_mode == 3`, the stock X683 selector bypasses the `max_victim_search` cap and the stock X683 `f2fs_need_SSR()` returns true. Those are stock behaviors, not new Transsion algorithms.
+
+The vendor helpers `tran_has_enough_free_segment()` and `is_f2fs_fragmentation()` are policy gates used by the Transsion control layer before entering GC. No direct vendor replacement for the victim picker or migration engine has been proven.
+
+## Migration result
+
+The binary retains the historical F2FS migration sequence:
+
+```text
+victim
+  -> SSA/summary preparation
+  -> segment iteration
+  -> node/data GC
+  -> merged-write submission
+  -> accounting
+  -> retry/checkpoint/cleanup
+```
+
+The data path retains the historical five-phase `gc_data_segment()` pipeline. No Transsion `tran_*` block-migration helper was found in the core migration loop by direct branch-target inspection.
+
+Proven X683-specific differences in the migration area are:
+
+- vendor-diverged structure/statistics layout;
+- vendor/statistics accounting;
+- mode selection performed by the external Transsion wrapper;
+- X683-specific packing/offsets.
+
+No custom Transsion data-allocation or physical-copy engine is proven.
+
+## X683 field correlation
+
+The recovered layout establishes:
 
 - `sbi + 0x3d8`: `log_blocks_per_seg`
 - `sbi + 0x3dc`: `blocks_per_seg`
@@ -40,29 +165,30 @@ The recovered layout already establishes:
 - `sbi + 0x438`: `unusable_block_count`
 - `sbi + 0x440`: `nquota_files`
 - `sbi + 0x4b8`: `mount_opt.opt`
+- `sbi + 0x508`: `gc_mutex`
+- `sbi + 0x528`: `gc_thread`
+- `sbi + 0x530`: `cur_victim_sec`
+- `sbi + 0x534`: `gc_mode`
+- `sbi + 0x538/+0x53c`: `next_victim_seg[2]`
+- `sbi + 0x560`: `max_victim_search`
+- `sbi + 0x564`: `migration_granularity`
+- `sbi + 0x568`: `stat_info` pointer
 
-The unresolved GC field at `0x534` now matches the historical `gc_mode` member with high confidence. Historical `f2fs_sb_info` places `cur_victim_sec` immediately before `gc_mode`, and the X683 binary's GC-state accesses are consistent with this ordering.
-
-## Segment-manager accesses
-
-The recovered `sm_info` correlations remain:
-
-- `0x00`: `sit_info`
-- `0x08`: `free_info`
-- `0x10`: `dirty_info`
-- `0x60`: `reserved_segments`
-
-This explains the stock free-segment path as `sbi -> sm_info -> free_info` and the dirty-victim path through `dirty_info`.
-
-## Transsion-specific boundary
-
-The stock kernel has additional Transsion GC triggering/coupling around charging, USB, framebuffer events, wakelock state, fragmentation and GC mode. Those triggers are intentionally kept outside the reconstructed core `f2fs_gc()` until each binary call site is independently matched. The current source therefore reconstructs the F2FS GC core without inventing vendor-specific predicates.
+The `stat_info` pointer is a separate object; `sbi + 0x570..0x5dc` are not `stat_info` members.
 
 ## Confidence
 
-- Three-argument GC ABI: **high**.
-- Core historical state machine: **high**.
-- `0x534 == gc_mode`: **high**.
-- Dirty/free segment manager relationships: **high**.
-- Exact Transsion trigger predicates: **unresolved**.
-- Exact X683-era helper implementation revisions: **still requires final source-tree matching**.
+- four-argument X683 GC ABI: **VERY HIGH**
+- stock victim-selection algorithm retained: **VERY HIGH**
+- stock CB/age/mtime cost retained: **VERY HIGH**
+- stock SSR selection retained: **VERY HIGH**
+- stock migration architecture retained: **VERY HIGH**
+- `tran_do_f2fs_gc()` mode override: **VERY HIGH**
+- exact semantics of every vendor threshold/global: **not fully resolved**
+- exact one-commit upstream ancestry: **not yet proven**
+
+## Detailed phase document
+
+See:
+
+`docs/reverse-engineering/x683-f2fs-victim-selection-migration-delta-2026-08-19.md`
