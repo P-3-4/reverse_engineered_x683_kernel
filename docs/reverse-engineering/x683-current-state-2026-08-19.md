@@ -146,18 +146,30 @@ The detailed evidence table and reconstruction are in:
 
 Move to the remaining X683 F2FS source/layout reconstruction and integration work. Do not reopen victim-selection or migration unless new binary evidence contradicts the completed phase.
 
-## Repository cleanup status
+## Repository cleanup status — 2026-08-19
 
-Many exploratory branches exist. Several GC branches are byte-for-byte identical at their tips; for example `gc-deep-pass`, `gc-deep-pass-final`, `gc-deep-pass-final2`, and `gc-pass-final` all resolve to commit `ac5db07b8b673d5b80aba800efb5a909179d6f32`.
+The repository contained a large set of exploratory branches created during successive GC reconstruction passes. They fall into three categories:
 
-The canonical continuation branch is now:
+1. **Canonical:** `kernel-reconstruction-current`.
+2. **Historical/archive:** `main` and `archive/reconstruction-f2fs-balance-delta-2026-08-19`.
+3. **Superseded exploratory branches:** the `gc-deep-pass*`, `gc-pass*`, `reconstruct-gc-victim-*`, `agent/*`, and `reconstruction-*` families unless a future comparison demonstrates unique evidence.
+
+Several GC branches are exact duplicate tips. For example, `gc-deep-pass`, `gc-deep-pass-final`, `gc-deep-pass-final2`, and `gc-pass-final` resolve to the same old commit `ac5db07b8b673d5b80aba800efb5a909179d6f32`, which is five commits behind the canonical branch.
+
+The old open PR #1 (`Deepen X683 phase-4 data migration reconstruction`) was inspected and determined to be superseded by the canonical reconstruction. It was closed rather than merged; its base was the obsolete `reconstruction` branch and its migration findings are already represented by the later canonical reconstruction. The PR was not allowed to introduce a second competing history into the canonical branch.
+
+The branch `reconstruction-f2fs-balance-delta` contains an older large reconstruction history and several useful historical documents, including the 2026-08-19 Transsion GC deep-pass and child-layout documents. Those artifacts remain preserved by the archival branch `archive/reconstruction-f2fs-balance-delta-2026-08-19`; the entire divergent branch was intentionally not merged into the canonical branch because doing so would reintroduce its obsolete history and conflicting intermediate state.
+
+### Canonical branch policy
+
+Going forward, all active reconstruction work should branch from:
 
 `kernel-reconstruction-current`
 
-It contains the completed deep-GC state, the victim-selection/migration phase document, and this updated snapshot.
+Do not resume work from any `gc-*`, `reconstruct-gc-*`, `agent/*`, or old `reconstruction-*` branch.
 
-An archival branch preserves the pre-GC reconstruction state:
+### Deletion limitation
 
-`archive/reconstruction-f2fs-balance-delta-2026-08-19`
+The connected GitHub interface available in this session exposes branch creation/ref movement and repository/PR operations but does not expose a branch-delete mutation. Therefore the obsolete branch refs could be classified and the stale PR closed here, but their GitHub branch refs cannot be physically deleted through the available connector. No destructive ref rewrite was performed merely to simulate deletion.
 
-Older exploratory branches should be treated as historical unless a future comparison demonstrates unique evidence in them.
+The canonical tree itself is clean and the historical evidence remains preserved in the designated archive branch.
