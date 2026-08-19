@@ -33,19 +33,118 @@ Conclusion: Transsion did not replace the core F2FS collector. It adds a policy/
 
 `CONFIG_F2FS_TRAN_GC=y` is enabled in the X683 configuration.
 
+## F2FS victim-selection / migration delta — completed 2026-08-19
+
+The deep phase documented in `docs/reverse-engineering/x683-f2fs-victim-selection-migration-delta-2026-08-19.md` is complete.
+
+### Correct X683 GC ABI
+
+The stock X683 binary definitively uses the four-argument form:
+
+```c
+f2fs_gc(sbi,
+        (sbi->mount_opt.opt >> 14) & 1,
+        true,
+        NULL_SEGNO);
+```
+
+The old three-argument statement in earlier exploratory GC notes is obsolete and must not be reused.
+
+### Stock victim-selection algorithm retained
+
+`get_victim_by_default()` at `0xffffff92d0dd2e74` is a standalone stock-like selector. The X683 binary preserves:
+
+- dirty-list locking and policy construction;
+- search limiting through `sbi + 0x560` (`max_victim_search`), except when the stock urgent-mode condition at `sbi + 0x534` is active;
+- current-victim exclusion through `sbi + 0x530`;
+- `next_victim_seg[2]` reuse through `sbi + 0x538/+0x53c`;
+- SIT validity/checkpoint filtering;
+- section-level candidate filtering;
+- minimum-cost selection.
+
+No independent Transsion victim picker was found.
+
+### Stock cost / age algorithm retained
+
+The X683 scoring path preserves the historical F2FS cases:
+
+```text
+SSR:     ckpt_valid_blocks
+GREEDY:  valid-block cost / segment type weighting
+CB:      mtime + utilization + age cost-benefit formula
+```
+
+Direct X683 CB fields include:
+
+```text
+SIT entry +0x20 = mtime
+sit_info +0x88  = min_mtime
+sit_info +0x90  = max_mtime
+sbi +0x3d8      = log_blocks_per_seg
+```
+
+The CB formula matches the closest public 4.14 F2FS implementation. No vendor age/mtime algorithm has been proven.
+
+### Stock SSR selector retained
+
+`f2fs_need_SSR()` at `0xffffff92d0de58f8` matches the historical 4.14 threshold logic. In particular, the X683 binary directly returns true when:
+
+```text
+sbi + 0x534 == 3
+```
+
+which is the stock urgent-mode SSR fast path. The vendor does not supply a separate SSR selector.
+
+### Genuine Transsion delta
+
+`tran_do_f2fs_gc()` at `0xffffff92d0dfada8` is the strongest vendor-specific GC modification. It:
+
+1. increments vendor telemetry;
+2. reads a vendor configuration at global `+0x998`;
+3. calls normal `f2fs_gc()` directly when the config is zero;
+4. otherwise temporarily writes `sbi + 0x534` (`gc_mode`) to `3` or `2`;
+5. calls the same four-argument `f2fs_gc()`;
+6. restores the original mode;
+7. records post-call telemetry.
+
+Therefore Transsion changes **when and under which existing stock GC mode the collector runs**, not the stock victim-cost or migration algorithms themselves.
+
+A `gc_mode == 3` run has stock consequences already present in X683: it bypasses the `max_victim_search` cap and forces the stock `f2fs_need_SSR()` result true.
+
+### Vendor gates outside the core picker
+
+The vendor helpers `tran_has_enough_free_segment()` and `is_f2fs_fragmentation()` are policy/entry gates. They inspect filesystem capacity/fragmentation state and determine whether the Transsion controller should initiate GC; they are not called as replacements for the stock victim scorer or migration engine.
+
+`need_switch_ssr_read()` / `need_switch_ssr_write()` are retained as vendor controller-state helpers. A direct call path replacing the stock SSR picker has not been proven.
+
+### Migration
+
+The X683 compiler has inlined the logical `do_garbage_collect()` and `gc_data_segment()` boundaries into `f2fs_gc()`. The recovered five-phase node/data migration pipeline matches historical F2FS. No Transsion `tran_*` migration helper was found inside the core victim/migration loop by direct branch-target inspection.
+
+The proven X683-specific differences inside the migration area are structure/statistics layout and vendor telemetry, plus the fact that the vendor controller can alter `gc_mode` before migration begins. No custom Transsion data-allocation/copy engine is proven.
+
+### Phase conclusion
+
+The actual X683 Transsion GC delta is best modeled as:
+
+```text
+Transsion controller policy
+        -> free-space / fragmentation / urgency gates
+        -> temporary gc_mode override
+        -> stock f2fs_gc()
+             -> stock victim filtering
+             -> stock SSR/greedy/CB scoring
+             -> stock age/mtime scoring
+             -> stock node/data migration
+```
+
+The detailed evidence table and reconstruction are in:
+
+`docs/reverse-engineering/x683-f2fs-victim-selection-migration-delta-2026-08-19.md`
+
 ## Next phase
 
-Target the actual algorithmic Transsion delta inside F2FS GC:
-
-1. victim selection
-2. victim scoring/cost calculation
-3. SSR selection
-4. age/mtime use
-5. victim filtering
-6. migration policy
-7. determine whether Transsion changes victim selection itself or only controls when/mode the stock collector runs
-
-Use the stock X683 binary as authority. Use public 4.14 F2FS source only as comparison/naming evidence. Separate binary proof, source correlation, and inference. Do not fill unknowns from newer F2FS structures.
+Move to the remaining X683 F2FS source/layout reconstruction and integration work. Do not reopen victim-selection or migration unless new binary evidence contradicts the completed phase.
 
 ## Repository cleanup status
 
@@ -55,7 +154,7 @@ The canonical continuation branch is now:
 
 `kernel-reconstruction-current`
 
-It points at the completed deep-GC state plus this snapshot.
+It contains the completed deep-GC state, the victim-selection/migration phase document, and this updated snapshot.
 
 An archival branch preserves the pre-GC reconstruction state:
 
