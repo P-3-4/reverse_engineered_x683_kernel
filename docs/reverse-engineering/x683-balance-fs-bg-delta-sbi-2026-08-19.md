@@ -101,6 +101,14 @@ C   = obj[0x80]
 scaled = (A * B * 0x51EB851F) >> 37
 ```
 
+A direct X683 constructor path now resolves `sbi+0x70` more precisely: `f2fs_fill_super()` stores the return value of the exported `d_make_root()` call into `sbi+0x70`. Therefore:
+
+```text
+sbi + 0x70 = root dentry pointer
+```
+
+The vendor fixed-point logic is reading fields through the root dentry object. The exact semantic mapping of its `+0x04`, `+0x18`, and `+0x80` members is not promoted here because that requires matching the exact 4.14 X683 dentry layout and independent access paths.
+
 The function then requires:
 
 ```text
@@ -183,7 +191,7 @@ Exact enum slots are deliberately not promoted yet; the binary proves the pair r
 ```text
 0x00  sb pointer
 0x48  s_flag region; bit3 is tested by f2fs_balance_fs_bg
-0x70  pointer to a nested X683 object used by the vendor fixed-point test
+0x70  root dentry pointer (result of d_make_root() in f2fs_fill_super)
 0x80  sm_info
 0x198 timestamp-like field used with a 250x interval computation
 0x1a0 timestamp-like field used with the clean-branch 250x computation
@@ -220,7 +228,21 @@ This promotes the earlier candidates to binary-proven counter roles. Historical 
 0x5dc  other_skip_bggc
 ```
 
-The mapping is supported by both the runtime update sites and the `stat_show()` export path at `0x37610c..0x376120`, which copies the three SBI counters into the stats object. Public 4.14 F2FS source also contains these background-GC/skip statistics concepts. citeturn446071search0
+The mapping is supported by both the runtime update sites and the stats export path that copies the counters into the statistics object. Public 4.14 F2FS source also contains these background-GC/skip statistics concepts. citeturn446071search0
+
+### `sm_info` child objects newly constrained
+
+Independent constructor/export paths establish:
+
+```text
+sbi + 0x80          = sm_info
+sm_info + 0x98      = secondary child pointer
+sm_info + 0xa0      = allocated vendor/segment-data child pointer
+```
+
+The `sm_info+0xa0` child is allocated as a large (~0x20b0-byte) object and explicitly initializes internal fields around `+0x208c`, `+0x2090`, `+0x2094`, `+0x2098`, `+0x20a0`, and `+0x20a8`. `f2fs_balance_fs_bg()` tests child `+0x2090` in its clean-branch guard, while the stats-export path reads other fields from both `sm_info+0x98` and `sm_info+0xa0`.
+
+These fields are therefore genuine X683 segment-manager/vendor state, not assumptions imported from a public F2FS structure. Their original source member names remain unresolved.
 
 ## Important correction to the previous reconstruction
 
@@ -245,8 +267,8 @@ The earlier semantic scaffold should be retained only as analysis history; it is
 
 ## Next exact SBI reconstruction targets
 
-1. Identify the original semantic object at `sbi+0x70` by tracing its allocation and all constructor/consumer accesses.
-2. Resolve the nested fields used through `sbi+0x80` in the clean branch, especially `sm_info+0x98`, `sm_info+0xa0`, and the nested `+0x2090` object.
+1. Resolve the `root dentry` field accesses at `sbi+0x70` against the exact X683 4.14 dentry layout without importing offsets from a different kernel revision.
+2. Map `sm_info+0x98` and `sm_info+0xa0` to their exact constructor-created objects and identify the fields exported by `stat_show()`.
 3. Resolve the enum slots for the `last_time[]` / `interval_time[]` pairs at `0x198/0x1c8` and `0x1a0/0x1d0` using independent writers.
 4. Continue proving every access in the `0x444..0x45c` IO-accounting region; names remain semantic until a second independent source path pins them.
 5. Integrate the proven `0x5d4..0x5dc` counters into the X683 `f2fs_sb_info` reconstruction.
