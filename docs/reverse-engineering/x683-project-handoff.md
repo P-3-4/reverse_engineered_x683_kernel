@@ -4,52 +4,66 @@
 
 - Repository: `P-3-4/reverse_engineered_x683_kernel`
 - Branch: `kernel-reconstruction-current`
-- Canonical tip before this pass: `8755b5fa0ef816b0ae9803949c1ab44e624dac3b`
-- Target: Infinix X683 / MT6768 / ARM64 / Linux `4.14.141+`
-- Authoritative artifacts: supplied X683 boot image, kallsyms and config; DTB is recovered from the boot image because the standalone DT archive is only a symlink.
+- Starting tip for the executable-recovery pass: `c1dd0eaa3fdf7e384b0f6089c2defeba2cca3213`
+- Current pass work is committed directly on the canonical branch.
+- Target: Infinix X683 / MT6768 / ARM64 / Linux `4.14.141+`.
+- Authoritative artifacts: supplied X683 boot image, kallsyms and config; complete DTB is recoverable from the boot image.
 
-## Revalidated inventory
+## Executable blocker closed
 
-- 56,975 executable kallsyms entries.
-- 52,784 unique executable kernel addresses.
-- 3,679 kallsyms records carry module names.
-- 11,692 indirect BLR sites from the prior executable-image analysis.
-- Prior direct-BL caller coverage: 35,080 / 52,784 = 66.46% under the current exact-symbol definition.
-- Boot-image DTB: 542 nodes, 381 with `compatible`.
-- Two enabled `mediatek,msdc` nodes at `0x11230000` and `0x11240000`.
+The authoritative ARM64 executable has been recovered from `x683_boot.img` as a gzip-compressed kernel payload followed by an appended DTB. Recovery is reproducible with `tools/extract_x683_boot_kernel.py`.
 
-## Preserved deep reconstruction
+- boot image SHA-256: `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`
+- decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
+- recovered DTB SHA-256: `de123d41bd398f20e97ecc01a21721437ee1698f9c1cbc178096946c4aedf1d6`
+- Android boot header: v2, page size 2048
+- gzip member: offset 2048, length 9,640,652
+- appended DTB: offset 9,642,700, size 114,696
+- decompressed Image: 26,615,820 bytes
 
-F2FS private layouts and Transsion GC work remain canonical and were not reopened without new executable evidence: `f2fs_sm_info=0xA8`, `sit_info=0xA8`, `free_segmap_info=0x20`, `dirty_seglist_info=0x90`, `curseg_info=0x70`, `curseg_info[6]=0x2A0`, `sm_info+0x98=flush_cmd_control`, `sm_info+0xA0=discard_cmd_control`, `discard_cmd_control=0x20B0`, and the proven four-argument `f2fs_gc` ABI.
+## Fresh executable analysis
 
-## This functional reconstruction pass
+- kallsyms entries: `56,976`
+- function-symbol entries: `56,975`
+- unique kernel function starts: `52,784`
+- direct BL sites: `295,805`
+- direct BL edges into known function ranges: `270,139`
+- exact symbol-start BL edges: `1,772`
+- direct-call callers: `35,034`
+- direct-call caller coverage: `66.3724%`
+- BLR sites: `11,692`
+- conservative static ADRP+ADD+LDR BLR sites: `922`
 
-Added:
+The exact `11,692` BLR count matches the prior executable-level inventory and independently validates the recovered Image/address mapping.
 
-- `analysis/x683-functional-pass-metrics.json`
-- `tools/rebuild_x683_inventory.py`
-- `reconstructed/arch/arm64/kernel/x683_hardware_integration.c`
-- `reconstructed/kernel/x683_async_infrastructure.c`
-- `docs/reverse-engineering/x683-current-state-2026-08-20-functional-pass.md`
-- `docs/reverse-engineering/x683-build-status-2026-08-20.md`
-- `docs/reverse-engineering/x683-vendor-delta-index-2026-08-20.md`
+## Build identity
 
-The new C units are evidence tables/model code rather than fake compile-complete vendor replacements. They pass host syntax validation with `cc -std=c11 -Wall -Wextra -Werror -fsyntax-only`.
+The executable contains the complete build string identifying Linux `4.14.141+`, Android clang `9.0.3`, LLVM `9.0.3svn`, and build timestamp `Fri Nov 5 15:56:25 CST 2021`. This is now executable evidence rather than inference. The exact historical vendor Git revision remains unresolved.
 
-## Current subsystem state
+## Source-path evidence
 
-F2FS, storage/MSDC, MM/reclaim, ION/M4U/DMA-BUF, Binder, scheduler/schedtune, PPM/cpufreq/thermal, power/PM, display/GPU, battery/charger, input, audio/network, security/crypto and DT/driver surfaces are mapped at evidence-supported boundaries. Exact indirect callbacks, private vendor structures and missing module implementations remain incomplete.
+At least `862` `kernel-4.14` path occurrences are present, including architecture, scheduler, power, MMC and other core paths. Public MT6768 4.14 source trees remain correlation references only; no exact Transsion/X683 Git revision is proven.
 
-## Build transition status
+## Preserved F2FS reconstruction
 
-A genuine ARM64 kernel build was not claimed. The repository still lacks a complete Linux 4.14.141 source baseline, generated headers and integrated Makefiles sufficient for `make olddefconfig`/`make Image`. The local boot artifact also lacks a freshly usable decompressed Image for renewed BL/BLR analysis during this pass.
+The canonical proven values are unchanged: `f2fs_sm_info=0xA8`, `sit_info=0xA8`, `free_segmap_info=0x20`, `dirty_seglist_info=0x90`, `curseg_info=0x70`, `curseg_info[6]=0x2A0`, `sm_info+0x98=flush_cmd_control`, `sm_info+0xA0=discard_cmd_control`, `discard_cmd_control=0x20B0`, and the proven four-argument `f2fs_gc` ABI.
 
-## Hard blockers
+## Build/boot gates
 
-1. Recover the decompressed authoritative X683 Image from the boot payload.
-2. Recover the exact historical vendor source revision.
-3. Resolve remaining indirect ops/callback containers and private structure fields.
-4. Recover missing WLAN/WMT/FPSGO and other runtime module binaries.
-5. Import the correct 4.14.141 source baseline and begin the real configuration/build transition.
+- Complete 4.14.141 source tree: **not yet recovered**.
+- `make olddefconfig`: **not run**.
+- `make prepare`: **not run**.
+- `make modules_prepare`: **not run**.
+- `make Image`: **not run**.
+- replacement boot: **not tested**.
+- Android userspace boot: **not verified**.
+- hardware functionality: **not verified**.
+
+## Remaining blockers
+
+1. Resolve high-value BLR/ops tables from the recovered executable data-flow.
+2. Recover the closest exact historical Transsion/X683 4.14.141 vendor source tree.
+3. Recover missing runtime module binaries, especially WLAN/WMT/FPSGO and any vendor code outside the Image.
+4. Integrate the verified baseline and begin the real ARM64 build transition.
 
 Unknowns remain explicit and are never promoted from inference to proof.
