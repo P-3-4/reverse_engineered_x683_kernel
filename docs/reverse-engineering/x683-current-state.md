@@ -2,29 +2,80 @@
 
 ## Verified executable baseline
 
-The canonical branch is `kernel-reconstruction-current`. Its current tip before this pass was `0d2d768c3b515341b011d66ec6f2a0f273031422`, parent `d5f9390a93f87f5df4db87609d57de2632b3c612`.
+The canonical branch is `kernel-reconstruction-current`. The supplied boot image remains the executable authority.
 
-The supplied boot image was independently reprocessed in this pass. The decompressed Image SHA-256 is `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`, size `26,615,820`; the recovered DTB SHA-256 is `de123d41bd398f20e97ecc01a21721437ee1698f9c1cbc178096946c4aedf1d6`, size `114,696`.
+Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
 
-Recomputed executable metrics exactly reproduce the existing authoritative counts: 56,976 kallsyms entries, 56,975 function entries, 52,784 unique kernel function starts, 295,805 direct BL sites, 270,139 mapped BL edges, 1,772 exact symbol-start BL edges, 35,034 direct-call callers, 66.3723856% caller coverage, and 11,692 BLR sites.
+Recovered DTB SHA-256: `de123d41bd398f20e97ecc01a21721437ee1698f9c1cbc178096946c4aedf1d6`
+
+Validated metrics remain:
+- kallsyms entries: 56,976
+- function entries: 56,975
+- unique kernel function starts: 52,784
+- direct BL sites: 295,805
+- mapped BL edges: 270,139
+- exact symbol-start BL edges: 1,772
+- BLR sites: 11,692
 
 ## BLR pass
 
-A conservative simple `ADRP + ADD + LDR -> BLR` recheck found 49 directly reconstructable chains in the supplied Image. None yielded an exact known kernel function address. Therefore no new indirect callback was promoted to exact/high-confidence status by this pass.
+Current evidence-only BLR state:
 
-The broader existing conservative inventory remains 922 candidate static BLR sites. Runtime-initialized ops/state pointers remain unresolved.
+- Conservative BLR inventory: 922 candidates.
+- ADRP + ADD + LDR -> BLR recheck: 49 chains.
+- Exact known-function BLR targets promoted: 0.
 
-## Structures
+Runtime-initialized ops/state pointers remain unresolved. No callbacks or ops tables are promoted without initializer provenance.
 
-The six proven F2FS layout values remain unchanged: `f2fs_sm_info=0xA8`, `sit_info=0xA8`, `free_segmap_info=0x20`, `dirty_seglist_info=0x90`, `curseg_info=0x70`, and `curseg_info[6]=0x2A0`. `sm_info+0x98` and `sm_info+0xA0` remain the proven flush/discard control locations, with discard control size `0x20B0`.
+## F2FS state
 
-## Build gate
+Proven layouts remain:
 
-No complete X683/Transsion 4.14.141 source baseline has been proven. Consequently the ARM64 build gates remain intentionally unrun rather than populated with an unverified source tree.
+- f2fs_sm_info = 0xA8
+- sit_info = 0xA8
+- free_segmap_info = 0x20
+- dirty_seglist_info = 0x90
+- curseg_info = 0x70
+- curseg_info[6] = 0x2A0
 
-## Highest-value next evidence
+Confirmed anchors:
 
-1. Resolve runtime-initialized BLR targets by following structure-base provenance across callers and initializers.
-2. Match the exact Transsion vendor source revision associated with the 2021-11-05 X683 build.
-3. Recover missing vendor/module source or binaries outside the built-in Image.
-4. Only then transition the verified baseline into a complete kernel build tree.
+- sm_info + 0x98 = flush_cmd_control
+- sm_info + 0xA0 = discard_cmd_control
+- discard_cmd_control size = 0x20B0
+
+F2FS GC symbols remain confirmed in the supplied kallsyms including f2fs_gc and Transsion GC wrapper functions.
+
+## Storage state
+
+Confirmed:
+
+- F2FS executable anchors.
+- MMC request framework symbols.
+
+Unresolved:
+
+- F2FS -> bio -> block -> MMC exact chain.
+- MSDC private structures.
+- DMA state.
+- IRQ/completion callback graph.
+
+## Source baseline
+
+Target remains:
+
+- Linux 4.14.141+
+- MT6768
+- Android clang 9.0.3
+- X683/H694 2021 firmware baseline
+
+Exact vendor source revision is not proven. No unverified source imported.
+
+## Next continuation target
+
+1. Resolve runtime BLR targets through structure-base provenance.
+2. Recover ops tables from registration paths.
+3. Continue F2FS/block/MSDC callback graph recovery.
+4. Match verified evidence against Transsion 4.14.141 source candidates.
+
+Build integration remains blocked until source baseline and vendor paths are sufficiently recovered.
