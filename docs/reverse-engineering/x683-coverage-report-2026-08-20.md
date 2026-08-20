@@ -1,84 +1,61 @@
 # X683 Reconstruction Coverage Report — 2026-08-20
 
-## Measured binary inventory
+## Fresh authoritative executable measurements
 
 | metric | measured value | meaning |
 |---|---:|---|
-| Kallsyms entries | 56,975 | all supplied symbol records |
-| unique executable Image addresses | 52,784 | kernel functions/symbol addresses in Image range |
-| module symbol entries | 3,679 | runtime modules outside supplied Image |
-| embedded source/header paths | 540 | cleaned `kernel-4.14/...` paths recovered from Image strings |
-| mapped direct BL instructions | 270,108 | BLs landing inside a known executable symbol range |
-| exact symbol-start BL edges | 4,133 | strongest direct call edges |
-| functions with mapped direct BL | 35,080 / 52,784 | **66.46%** caller-side direct-BL coverage |
-| target functions reached by mapped direct BL | 9,429 | containing-symbol target approximation |
-| indirect BLR instructions | 11,692 | unresolved indirect dispatch sites requiring data-reference analysis |
-| reconstruction units after this pass | 21 | 13 existing + 8 new binary-backed C units |
+| Kallsyms entries | 56,976 | all supplied records parsed from `x683_kallsyms.txt` |
+| function-symbol entries | 56,975 | kallsyms records of function-bearing types |
+| unique kernel function starts | 52,784 | unique function starts inside recovered Image range |
+| direct BL instruction sites | 295,805 | direct branch instructions inside function ranges |
+| mapped direct BL edges | 270,139 | BL targets landing inside known function ranges |
+| exact symbol-start BL edges | 1,772 | strongest exact-start direct edges under the current definition |
+| functions with mapped direct BL | 35,034 / 52,784 | **66.3724%** caller-side direct-BL coverage |
+| indirect BLR instructions | 11,692 | indirect dispatch sites |
+| static ADRP+ADD+LDR BLR candidates | 922 | conservative static/table-backed candidates |
+| exact targets resolved from that static pattern | 0 | none promoted without stronger evidence |
+| reconstruction C units | 21 | existing evidence-backed C models retained |
 
-The earlier 84.97% direct-call figure is retired. It conflated broader branch-target heuristics with exact function-level direct-call coverage. The 66.46% number above is calculated directly from the supplied Image and kallsyms.
+The fresh BLR count exactly matches the prior executable-level count. The older exact-start/direct-call figures are not mixed with this measurement definition; the current report is based on a single reproducible scan of the recovered Image.
+
+## Executable recovery
+
+The authoritative Image is now directly available from the supplied boot container:
+
+- boot header v2, 2048-byte pages
+- gzip member length `9,640,652`
+- appended DTB size `114,696`
+- decompressed Image size `26,615,820`
+- Image SHA-256 `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
 
 ## Subsystem inventory
 
-| subsystem | executable functions | direct-BL callers | caller coverage |
-|---|---:|---:|---:|
-| arch/IRQ | 1,433 | 942 | 65.73% |
-| audio | 1,036 | 720 | 69.50% |
-| battery/USB | 6,288 | 4,080 | 64.89% |
-| display/GPU | 1,529 | 1,163 | 76.06% |
-| F2FS | 701 | 452 | 64.48% |
-| input/sensors | 525 | 378 | 72.00% |
-| MM | 2,290 | 1,615 | 70.52% |
-| networking | 1,239 | 543 | 43.83% |
-| other | 28,892 | 19,109 | 66.14% |
-| power | 2,235 | 1,465 | 65.55% |
-| scheduler | 2,061 | 1,356 | 65.79% |
-| security/crypto | 1,328 | 896 | 67.47% |
-| storage | 2,194 | 1,642 | 74.84% |
-| thermal/DVFS | 963 | 672 | 69.78% |
-
-Classification is lexical triage and must not be interpreted as source reconstruction.
+The repository's subsystem counts remain lexical triage rather than source-equivalence. Existing F2FS/storage/MM/ION/Binder/scheduler/PPM/thermal/PM/display/battery/input/audio/network/security mappings are preserved and can now be cross-checked against the recovered executable.
 
 ## Reconstruction coverage
 
-### F2FS
+F2FS private layouts, Transsion GC policy/state machine, victim/migration boundary, checkpoint/segment/node/data/recovery models, MSDC/storage state model, reclaim/shrinker model, ION/M4U/Binder model, scheduler/PPM/thermal model, PM/display/battery/input/audio/network/security evidence models remain present.
 
-Deep binary reconstruction already established before this pass is preserved: `f2fs_sm_info`, `sit_info`, `free_segmap_info`, `dirty_seglist_info`, `curseg_info[6]`, flush/discard control, four-argument `f2fs_gc`, stock victim/migration boundary, and Transsion GC policy/state machine.
+No whole-kernel source-equivalence percentage is reported. Binary source-path strings are evidence of original build inputs, not proof that a reconstructed file is source-identical.
 
-The previous pass also added binary-backed checkpoint, segment, node/NAT, data, recovery, discard, shrinker and sysfs source models. This pass did not reopen proven GC/victim work.
+## Build gate
 
-### Storage
+- complete 4.14.141 vendor source tree: **NO**
+- `make olddefconfig`: **NOT RUN**
+- `make prepare`: **NOT RUN**
+- `make modules_prepare`: **NOT RUN**
+- `make Image`: **NOT RUN**
+- modules build: **NOT RUN**
 
-The X683 DT, config, kallsyms and direct disassembly now establish the two enabled MSDC nodes, request path entry points, DMA/IRQ/tuning/CQ/crypto hooks and system/runtime PM entry points. Indirect callback containers and several private host-state fields remain unresolved.
+## Boot/functionality gate
 
-### MM / Android memory
+- replacement kernel boot: **NOT TESTED**
+- Android userspace boot: **NOT VERIFIED**
+- storage/display/touch/USB/audio/Wi-Fi/Bluetooth/battery/suspend functional tests: **NOT VERIFIED**
 
-The actual X683 reclaim/kswapd/OOM/PSI symbol surface and ION/M4U/Binder shrinker paths are mapped. Configuration proves the enabled feature boundary. Exact private ownership/state transitions remain partially indirect.
+## Current reconstruction blockers
 
-### Scheduler / PPM / thermal / power
-
-schedtune, PPM, cpufreq, cpuidle, EEM/PBM, thermal and GPU PM surfaces are mapped with exact X683 addresses. Callback/container layouts remain partially unresolved.
-
-### Display / battery / USB
-
-The prior binary-backed display/GPU and MT6358/charger/Transsion battery integration remains intact. This pass adds stronger DT binding evidence and exact symbol inventories but does not claim generic source equivalence.
-
-### Input / audio / network / security
-
-The actual X683 Ilitek/TPD, AFE/MT6768 audio, WMT/WLAN module and BTIF surfaces are identified. Security/crypto is constrained by the actual config and source-path fingerprint. Module binaries are missing, so module disassembly is explicitly not claimed.
-
-## Source reconstruction coverage
-
-A trustworthy whole-kernel source-file percentage cannot be derived from the binary because there is no DWARF/source-map association between every symbol and original source path. The recovered source-path list is evidence of build inputs, not proof that a reconstructed C file is equivalent to that path.
-
-Therefore this pass reports:
-
-- **21 reconstruction C units** in the repository.
-- **78 model functions** in the 13 pre-existing binary-backed source artifacts.
-- **8 additional evidence-backed C units** added in this pass.
-- **No inflated whole-kernel source-equivalence percentage.**
-
-## Overall conclusion
-
-The binary/function inventory is now complete for the supplied Image, the direct-BL graph has a reproducible measured baseline, the DT from the boot image has been recovered despite the incomplete standalone DT artifact, and the highest-value storage/MM/scheduler/power/input/audio/security surfaces have been connected.
-
-The project remains a reverse-engineered reconstruction rather than a source-identical rebuild. Indirect dispatch, private structure naming, missing module binaries, and exact historical vendor revision remain the dominant blockers.
+1. Runtime BLR/ops-table resolution and private structure field recovery.
+2. Exact historical Transsion/X683 4.14.141 vendor source revision.
+3. Missing runtime module binaries, especially WLAN/WMT/FPSGO.
+4. Genuine source-tree integration and ARM64 build transition.
