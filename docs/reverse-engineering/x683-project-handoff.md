@@ -4,60 +4,71 @@
 
 - Repository: `P-3-4/reverse_engineered_x683_kernel`
 - Branch: `kernel-reconstruction-current`
-- Pre-pass canonical commit: `75273606d654df536f61f5879ae981d4dcf1e7f2`
+- Current pre-pass commit: `98bfea9bd077cb80abe54fbb8d6dd971d5ea2086`
+- Its parent: `75273606d654df536f61f5879ae981d4dcf1e7f2`
 - Target: Infinix X683 / MT6768 / ARM64 / Linux `4.14.141+`
 
-## Completed before this pass
+## This pass
 
-F2FS `f2fs_sm_info`, `sit_info`, `free_segmap_info`, `dirty_seglist_info`, `curseg_info[6]`, flush/discard control layouts, stock four-argument `f2fs_gc()`, victim selection, migration and the Transsion GC controller/state machine are established. Do not reopen them without contradictory binary evidence.
+The supplied boot image, kallsyms and config were re-analyzed from the actual local artifacts. The standalone DT archive was verified incomplete, and the full DT table was recovered from the boot image instead of being inferred.
 
-## Completed in this pass
+### New persistent analysis
 
-- Whole-image executable inventory: 52,784 unique executable addresses.
-- Direct ARM64 BL cross-reference scan: 44,852 functions have exact-symbol direct BL edges.
-- 619 compiler-embedded source/header paths.
-- F2FS checkpoint, segment allocation, node/NAT, data I/O, recovery, discard, shrinker and sysfs surfaces.
-- Actual X683 eMMC/MSDC storage path, including request/DMA/IRQ/tuning/PM.
-- MM/reclaim/kswapd/OOM/PSI/ION/M4U/Binder integration.
-- schedtune/PPM/cpufreq/cpuidle/thermal policy surface.
-- framebuffer/display-to-GC and display-to-DVFS callback surface.
-- MT6358 gauge, charger detection, power-supply and Transsion battery integration.
-- 13 new binary-backed reconstructed C files.
+- 52,784 unique executable Image addresses inventoried.
+- 56,975 kallsyms entries classified; 3,679 are runtime module symbols outside the Image.
+- 270,108 direct BL instructions mapped into executable symbol ranges.
+- 4,133 exact symbol-start BL edges.
+- 35,080 / 52,784 functions have at least one mapped direct BL: 66.46%.
+- 11,692 indirect BLR sites identified.
+- 540 cleaned `kernel-4.14/...` source/header paths recovered from Image strings.
+- Boot-image DT parsed: 542 nodes, 382 with `compatible` and/or `reg`.
+- 8 additional binary-backed C evidence units added.
 
-## Key addresses
+### Existing F2FS work preserved
 
-```text
-f2fs_gc                    0xffffff92d0dd03a8
-f2fs_write_checkpoint      0xffffff92d0dce5d0
-f2fs_build_segment_manager 0xffffff92d0ded138
-f2fs_allocate_data_block  0xffffff92d0dea3c8
-f2fs_build_node_manager    0xffffff92d0de49a8
-f2fs_recover_fsync_data    0xffffff92d0df0d08
-issue_discard_thread       0xffffff92d0df0120
-msdc_drv_probe             0xffffff92d1564ba0
-msdc_ops_request           0xffffff92d1566448
-msdc_irq                   0xffffff92d1565aa0
-mt6358_gauge_probe         0xffffff92d0fbb448
-tran_battery_probe         0xffffff92d150cb90
-fb_event                   0xffffff92d0dfacf8
-schedtune_enqueue_task     0xffffff92d0b26944
-binder_transaction         0xffffff92d15e7d1c
-ion_alloc                  0xffffff92d15adb68
-```
+The proven F2FS layouts and Transsion GC boundary remain canonical. The four-argument `f2fs_gc` ABI and temporary `gc_mode` behavior are not reopened.
 
-## Remaining
+### New source units
 
-1. Exact Transsion source git revision.
-2. Formal vendor global-state struct declaration.
-3. Adjacent unresolved `f2fs_sb_info` fields and exact `sit_info +0x10` member name.
-4. Indirect callback/proc-op container layouts.
-5. Byte/structure-accurate reconstruction of the remaining generic and MTK driver surface.
-6. Static DT contents; the supplied DT artifact contains only a symlink.
+- `reconstructed/drivers/mmc/host/mediatek/ComboA/mt6768/x683_msdc_state.c`
+- `reconstructed/mm/x683_reclaim_shrinkers.c`
+- `reconstructed/drivers/android/x683_ion_m4u_binder.c`
+- `reconstructed/kernel/sched/x683_sched_ppm_thermal.c`
+- `reconstructed/drivers/misc/mediatek/base/power/x683_power_pm_reconstructed.c`
+- `reconstructed/arch/arm64/kernel/x683_dt_driver_init.c`
+- `reconstructed/drivers/input/touchscreen/x683_touch_audio_net.c`
+- `reconstructed/security/x683_security_crypto.c`
+
+These are evidence-backed reconstruction units, not fake compile-complete replacements. Unknown structures and indirect calls remain explicit.
+
+## Persistent analysis artifacts
+
+The repository keeps compact reproducible summaries and the analysis generator. The full generated JSONL inventory/callgraph can be regenerated from the supplied Image and kallsyms rather than being silently truncated into Git.
+
+- `analysis/x683-measured-coverage.json`
+- `analysis/x683-selected-callgraph-summary.json`
+- `analysis/x683-source-paths.txt`
+- `analysis/x683-config-selected.txt`
+- `analysis/x683-dt-nodes.json`
+- `analysis/x683-dt-summary.json`
+- `analysis/x683-module-symbol-inventory.tsv`
+- `tools/rebuild_x683_analysis.py`
+
+## Current high-value remaining work
+
+1. Resolve indirect callback/ops tables by data-reference analysis.
+2. Recover exact private MSDC host/request/CQ state fields and error transitions.
+3. Resolve ION/M4U/Binder ownership and callback structures.
+4. Recover exact PPM/schedtune client structures and thermal limit callback data.
+5. Correlate initcall tables to DT probe ordering.
+6. Recover missing runtime module binaries for WLAN/WMT/FPSGO and disassemble them.
+7. Determine the exact historical vendor source revision; `kernel-4.14` + `4.14.141+` + clang 9.0.3 is strong but not an exact git revision.
+8. Continue exact F2FS adjacent `f2fs_sb_info`/vendor-state field naming only where new binary evidence is available.
 
 ## Evidence discipline
 
-HIGH = direct binary/disassembly proof. MEDIUM = binary plus historical-source correlation. LOW = inference. Binary wins over historical source. Unknowns stay offset-backed.
+HIGH = direct binary/DT/kallsyms/config proof.
+MEDIUM = binary plus historical-source correlation.
+LOW = inference.
 
-## Next phase rule
-
-Choose the next target from the persistent inventory, not arbitrarily. Highest-value candidates are remaining F2FS internal fields, MSDC error/PM paths, MM+ION+M4U reclaim, PPM/scheduler/thermal callbacks, and device-specific driver probe/PM paths.
+Binary wins over historical source. Unknowns stay offset-backed. Module symbols without module binaries are inventory-only.
