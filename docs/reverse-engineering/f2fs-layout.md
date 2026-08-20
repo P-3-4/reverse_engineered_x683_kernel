@@ -46,16 +46,16 @@ sizeof(dirty_seglist_info)  = 0x90
 sizeof(curseg_info)         = 0x70
 curseg_info count           = 6
 curseg array size           = 0x2A0
-sm_info + 0x98              = fcc_info
-sm_info + 0xa0              = dcc_info
+sm_info + 0x98              = flush_cmd_control
+sm_info + 0xa0              = discard_cmd_control
 sizeof(discard_cmd_control) = 0x20B0
 ```
 
 The dirty counters at `dirty_info + 0x68..0x7c` are the first six entries of `nr_dirty[8]`.
 
-## 2026-08-19 whole-image integration addendum
+## Whole-image integration
 
-The segment manager is now connected to the stock X683 mount/checkpoint/allocation/recovery surface.
+The segment manager is connected to the stock X683 mount/checkpoint/allocation/recovery surface.
 
 ```text
 f2fs_fill_super
@@ -91,18 +91,20 @@ f2fs_recover_fsync_data    = 0xffffff92d0df0d08
 issue_discard_thread       = 0xffffff92d0df0120
 ```
 
-The exact formal members outside the proven offsets remain unresolved. Use `sbi + 0xOFFSET` rather than guessed member names.
+## 2026-08-20 executable revalidation
+
+The recovered Image was independently decompressed and measured again. Image SHA-256 is `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`. The proven layout sizes remain unchanged. No new formal member names were added from the BLR recheck.
+
+The vendor GC symbols are present in kallsyms, including `tran_do_f2fs_gc`, `tran_gc_thread_func`, `tran_gc_init`, `tran_has_enough_free_segment` and `is_f2fs_fragmentation`. The proven four-argument `f2fs_gc` ABI remains unchanged.
 
 ## Transsion GC context
-
-The vendor GC state remains offset-backed. The established boundary is:
 
 ```text
 Transsion admission/policy -> tran_do_f2fs_gc -> stock f2fs_gc
 -> stock victim selection -> stock migration/accounting
 ```
 
-No downstream `tran_*` migration/scoring replacement was found.
+No downstream `tran_*` migration/scoring replacement was promoted.
 
 ## Remaining layout work
 
