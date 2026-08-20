@@ -43,13 +43,43 @@ MediaTek eMMC/MSDC vendor stack
 MT6768 platform
 ```
 
-This represents ownership inferred from recovered configuration and symbols. Exact source ownership and device-tree bindings remain unresolved until DTB extraction and validation are completed.
+## Verified DTB dependency extraction
 
-## Unknowns
+From the stock boot image DTB:
 
-- Exact X683/H694 device tree source ownership.
-- Exact MSDC node definitions.
-- Exact regulator and clock bindings.
+```
+/msdc@11240000
+```
+
+Confirmed properties:
+
+```
+compatible = mediatek,msdc
+index = 1
+bus-width = 4
+status = okay
+```
+
+Confirmed clock dependencies:
+
+```
+msdc1-clock
+msdc1-hclock
+```
+
+Confirmed regulator dependencies:
+
+```
+vmmc-supply  -> MT6358 ldo_vmch
+vqmmc-supply -> MT6358 ldo_vmc
+```
+
+These findings are based on extracted stock DTB data. They do not represent a generic MT6768 reference implementation.
+
+## Remaining unknowns
+
+- Exact vendor MSDC source ownership.
+- Exact MSDC probe implementation details.
+- Clock ID mapping inside the MT6768 clock provider.
+- Full regulator sequencing during MMC initialization.
 - Missing vendor source files.
-
-No generic MT6768 reference implementation is treated as proof of stock behavior.
