@@ -1,0 +1,17 @@
+{
+  "date": "2026-08-20",
+  "callback_graphs": [
+    {
+      "domain": "Transsion F2FS GC",
+      "known_functions": ["tran_gc_init", "tran_gc_thread_func", "tran_do_f2fs_gc", "tran_has_enough_free_segment", "is_f2fs_fragmentation", "f2fs_gc"],
+      "status": "symbol-level graph only",
+      "confidence": "high for symbol identity, unresolved for indirect callback edges"
+    }
+  ],
+  "blr_resolution": {
+    "total_sites": 11692,
+    "conservative_static_candidates": 922,
+    "exact_callback_resolutions": 0,
+    "policy": "runtime-initialized ops/state pointers are not converted to callback targets without a proven data-flow chain"
+  }
+}

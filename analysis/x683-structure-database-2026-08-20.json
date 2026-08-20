@@ -1,0 +1,17 @@
+{
+  "date": "2026-08-20",
+  "structures": {
+    "f2fs_sm_info": {"size": "0xA8", "confidence": "high"},
+    "sit_info": {"size": "0xA8", "confidence": "high"},
+    "free_segmap_info": {"size": "0x20", "confidence": "high"},
+    "dirty_seglist_info": {"size": "0x90", "confidence": "high"},
+    "curseg_info": {"size": "0x70", "confidence": "high"},
+    "curseg_info_array_6": {"size": "0x2A0", "confidence": "high"}
+  },
+  "additional_proven_fields": {
+    "sm_info_plus_0x98": "flush_cmd_control",
+    "sm_info_plus_0xA0": "discard_cmd_control",
+    "discard_cmd_control_size": "0x20B0"
+  },
+  "policy": "Only layouts already supported by executable evidence are recorded; unresolved vendor fields remain unnamed."
+}

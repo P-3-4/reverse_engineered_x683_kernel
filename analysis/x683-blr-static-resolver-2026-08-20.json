@@ -1,0 +1,29 @@
+{
+  "analysis_date": "2026-08-20",
+  "authority": "recovered X683 ARM64 Image + supplied kallsyms",
+  "image_sha256": "96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba",
+  "image_size": 26615820,
+  "_stext": "0xffffff92d0a80800",
+  "image_file_base": "0xffffff92d0a00800",
+  "kallsyms_entries": 56976,
+  "kallsyms_function_entries": 56975,
+  "unique_kernel_function_starts": 52784,
+  "direct_bl_sites": 295805,
+  "direct_bl_mapped_edges": 270139,
+  "direct_bl_exact_symbol_start_edges": 1772,
+  "direct_bl_unique_callers": 35034,
+  "direct_bl_caller_coverage": 0.6637238557138527,
+  "blr_sites": 11692,
+  "simple_static_adrp_add_ldr_chains_rechecked": 49,
+  "simple_static_chain_exact_function_targets": 0,
+  "simple_static_chain_exact_sites": 0,
+  "confidence_policy": "No indirect edge is promoted without executable data-flow evidence.",
+  "known_transsion_gc_symbols": {
+    "tran_gc_thread_func": "0xffffff92d0df6ed0",
+    "tran_do_f2fs_gc": "0xffffff92d0dfada8",
+    "tran_gc_init": "0xffffff92d0dfae98",
+    "is_f2fs_fragmentation": "0xffffff92d0dfb580",
+    "tran_has_enough_free_segment": "0xffffff92d0dfb5d4",
+    "f2fs_gc": "0xffffff92d0dd03a8"
+  }
+}
