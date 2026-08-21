@@ -34,6 +34,24 @@ The generic `CONFIG_MMC_MTK` and `CONFIG_MMC_MTK_SDIO` paths are disabled. The s
 
 This makes MSDC/DT reconstruction a concrete next integration target rather than a generic MMC investigation. See `mt6768-storage-symbol-map.md`.
 
+### Stock DTB/MSDC reconstruction — NEW
+
+The appended stock FDT has been parsed directly: 542 nodes and 2,645 properties. The storage nodes are now recovered at source-property level.
+
+- `/msdc@11230000`: 0x11230000/0x10000, IRQ 0x64, 8-bit eMMC, 200 MHz maximum, HS/DDR/HS200/HS400, non-removable, bootable, VEMC supply, three named clocks.
+- `/msdc@11240000`: 0x11240000/0x10000, IRQ 0x65, 4-bit SD, 200 MHz maximum, SDR12/25/50/104 and DDR50, VMCH/VMC supplies, card-detect GPIO index `4`, two named clocks.
+- `/msdc0_top@11cd0000` and `/msdc1_top@11c90000` are recovered with their exact compatible strings and register windows.
+- Pinctrl phandles `0x30..0x39` and register-setting byte values are recovered.
+- Supply phandles resolve to `ldo_vemc`, `ldo_vmch`, and `ldo_vmc`.
+
+A reproducible extractor is now in `tools/reconstruct_x683_dtb.py`; the evidence and storage fragment are under `docs/reconstruction/` and `reconstruction/dts/`.
+
+### MT6768 MSDC source-lineage lock — NEW
+
+A public 4.14 MT6768 vendor tree was found whose `cust_mt6768_msdc.dtsi` matches the stock X683 DT structure and values across the major storage properties. Its MT6768 binding also proves `MSDC_EMMC=0`, `MSDC_SD=1`, `MSDC1_CLKSRC_200MHZ=2`, and `MSDC_SMPL_RISING=0`, matching stock.
+
+The stock X683 DT has a concrete delta from that reference: public source uses SD card-detect GPIO 18, while stock contains GPIO index 4. The public `mtk-sd.c` also acquires clocks using different names (`source`, `hclk`, optional `source_cg`) and therefore is not safe to import unchanged. It remains a high-value structural reference only.
+
 ## F2FS
 
 The stock ramdisk uses `tran_gc` as an actual userdata F2FS mount option. `CONFIG_F2FS_TRAN_GC=y` is enabled in the recovered configuration.
@@ -101,7 +119,6 @@ Authoritative detail: `docs/reverse-engineering/x683-366cd4-byte-sanity-pass.md`
 
 - exact 4.14.141 X683/Transsion kernel source baseline;
 - exact MSDC source revision and source-tree ownership;
-- X683 DTB/DTBO source reconstruction and host-node binding;
 - complete MT6768 platform driver graph;
 - unresolved vendor globals/callbacks in Transsion GC;
 - integration of reconstructed F2FS files into a complete kernel tree;
