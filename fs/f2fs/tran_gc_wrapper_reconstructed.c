@@ -13,6 +13,14 @@
 #define X683_VENDOR_GC_MODE_URGENT 2
 #define X683_VENDOR_GC_MODE_GREEDY 3
 
+/*
+ * Provider supplied by the X683 vendor-state integration layer.
+ * The binary establishes the global's image-relative location (+0x1a13998),
+ * but does not recover an original source-level symbol name. Keep that
+ * provider external instead of inventing a new storage object here.
+ */
+extern u32 x683_vendor_gc_controller;
+
 extern int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
 			bool background, unsigned int segno);
 
