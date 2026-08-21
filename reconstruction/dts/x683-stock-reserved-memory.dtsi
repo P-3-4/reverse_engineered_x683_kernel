@@ -1,0 +1,69 @@
+/* Exact stock X683/H694 memory and reserved-memory properties recovered from boot.img DTB. */
+
+memory {
+	device_type = "memory";
+	reg = <0x0 0x40000000 0x0 0x3e605000>;
+};
+
+reserved-memory {
+	#address-cells = <0x2>;
+	#size-cells = <0x2>;
+	ranges;
+	phandle = <0x66>;
+
+	zmc-default {
+		compatible = "mediatek,zone_movable_cma";
+		size = <0x0 0x2d000000>;
+		alignment = <0x0 0x1000000>;
+		alloc-ranges = <0x0 0xc0000000 0x0 0x4000000>;
+	};
+
+	reserve-memory-sspm_share {
+		compatible = "mediatek,reserve-memory-sspm_share";
+		no-map;
+		status = "okay";
+		size = <0x0 0x510000>;
+		alignment = <0x0 0x10000>;
+		alloc-ranges = <0x0 0x40000000 0x0 0x60000000>;
+	};
+
+	reserve-memory-scp_share {
+		compatible = "mediatek,reserve-memory-scp_share";
+		no-map;
+		size = <0x0 0x300000>;
+		alignment = <0x0 0x1000000>;
+		alloc-ranges = <0x0 0x40000000 0x0 0x50000000>;
+	};
+
+	ion-carveout-heap {
+		compatible = "mediatek,ion-carveout-heap";
+		no-map;
+		size = <0x0 0x4000>;
+		alignment = <0x0 0x1000>;
+		alloc-ranges = <0x0 0x40000000 0x0 0x80000000>;
+	};
+
+	consys-reserve-memory {
+		compatible = "mediatek,consys-reserve-memory";
+		no-map;
+		size = <0x0 0x400000>;
+		alignment = <0x0 0x1000000>;
+		alloc-ranges = <0x0 0x40000000 0x0 0x80000000>;
+	};
+
+	wifi-reserve-memory {
+		compatible = "mediatek,wifi-reserve-memory";
+		no-map;
+		size = <0x0 0x300000>;
+		alignment = <0x0 0x1000000>;
+		alloc-ranges = <0x0 0x40000000 0x0 0x80000000>;
+	};
+
+	soter-shared-mem {
+		compatible = "microtrust,shared_mem";
+		no-map;
+		size = <0x0 0x200000>;
+		alignment = <0x0 0x200000>;
+		alloc-ranges = <0x0 0x40000000 0x0 0x50000000>;
+	};
+};
