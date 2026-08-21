@@ -1,281 +1,78 @@
-# X683 / H694 Kernel Reverse-Engineering — Canonical Project Handoff
+# X683 Kernel Reverse Engineering — Project Handoff
 
-Last consolidated: 2026-08-18
+## Canonical state
 
-## Continuation rule
+- Repository: `P-3-4/reverse_engineered_x683_kernel`
+- Branch: `kernel-reconstruction-current`
+- Previous tip: `0d2d768c3b515341b011d66ec6f2a0f273031422`
+- Previous parent: `d5f9390a93f87f5df4db87609d57de2632b3c612`
+- Target: Infinix X683 / MT6768 / ARM64 / Linux `4.14.141+`.
+- Authoritative artifacts: supplied X683 boot image, kallsyms, config and recovered DTB.
 
-Work from `main` in `P-3-4/reverse_engineered_x683_kernel`.
+## Executable authority revalidated
 
-**Binary authority:** uploaded stock X683/H694 `boot(8).img`, its standalone compressed kernel, and the decompressed Image. Public Android/Linux/F2FS source is comparison evidence only.
+This pass independently decompressed the supplied boot image and recomputed the executable metrics against the actual recovered Image.
 
-Verified binary identity:
+- decompressed Image SHA-256: `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`
+- Image size: `26,615,820`
+- recovered DTB SHA-256: `de123d41bd398f20e97ecc01a21721437ee1698f9c1cbc178096946c4aedf1d6`
+- kallsyms entries: `56,976`
+- function entries: `56,975`
+- unique kernel function starts: `52,784`
+- direct BL sites: `295,805`
+- direct BL mapped edges: `270,139`
+- exact symbol-start BL edges: `1,772`
+- direct-call callers: `35,034`
+- direct-call caller coverage: `66.3723856%`
+- BLR sites: `11,692`
 
-```text
-boot SHA-256  = a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180
-Image SHA-256 = 96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba
-Image size    = 26,615,820 bytes
-```
+These values reproduce the previous executable-level measurements; they are not carried forward as unverified historical numbers.
 
-## End-to-end GC architecture
+## BLR pass
 
-```text
-Transsion detector/thread
-    -> freezer/per-CPU synchronization gate
-    -> tran_f2fs_gc() wrapper @ 0x37ada8
-    -> X683 four-argument f2fs_gc() @ 0x3503a8
-    -> historical F2FS victim/migration/accounting core
-    -> post-GC vendor policy @ 0x366cd4
-    -> optional balance/sync side effects
-```
+The existing conservative static inventory contains `922` BLR candidates. An independent simple `ADRP + ADD + LDR -> BLR` recheck found `49` such chains in the recovered Image and `0` exact known-function targets. No indirect callback was therefore promoted by this pass.
 
-Detector call site around `0x377410..0x37742c` proves that `tran_f2fs_gc(sbi)` returns successfully and is followed by `0x366cd4(sbi)`.
+Runtime-initialized ops/state pointers remain explicit unresolved evidence.
 
-## `tran_f2fs_gc()` controller mapping
+## F2FS state
 
-```text
-controller 0 -> direct f2fs_gc(); gc_mode unchanged
-controller 1 -> temporary sbi->gc_mode = 2
-controller 2 -> temporary sbi->gc_mode = 3
-```
+The proven layout anchors remain:
 
-Vendor mode values around the X683 implementation establish `2=URGENT`, `3=GREEDY`.
+- `f2fs_sm_info = 0xA8`
+- `sit_info = 0xA8`
+- `free_segmap_info = 0x20`
+- `dirty_seglist_info = 0x90`
+- `curseg_info = 0x70`
+- `curseg_info[6] = 0x2A0`
+- `sm_info + 0x98 = flush_cmd_control`
+- `sm_info + 0xA0 = discard_cmd_control`
+- `discard_cmd_control = 0x20B0`
 
-Therefore Stop-4/5 raw controller value `2` selects temporary `gc_mode=3`.
+The proven four-argument `f2fs_gc` ABI remains authoritative. Known Transsion GC symbols are present in the supplied kallsyms.
 
-## `0x366cd4..0x366f2c` policy
+## Build identity and source baseline
 
-`0x366f2c` is the canary-failure tail; next normal function begins at `0x366f30`.
+The Image contains Linux `4.14.141+`, Android clang `9.0.3`, LLVM `9.0.3svn`, and build timestamp `Fri Nov 5 15:56:25 CST 2021`. The `X683-H694EFGHIJUW-Q-OP-211105V361` firmware release is a high-confidence release target, but the exact vendor Git revision is not proven.
 
-Entry ladder:
+Public MT6768 4.14 trees remain correlation references only. No unverified source has been imported.
 
-```text
-sbi+0x48 bit3 -> return
-policy(sbi,4) false -> 0x373108(sbi,0x80)
-policy(sbi,1) false -> 0x35d22c(sbi,455)
-policy(sbi,0) true  -> 0x362c40(sbi,0,0)
-policy(sbi,0) false -> 0x363288(sbi,0xe38)
-```
+## Build gate
 
-For `gc_mode != 3`, the seven-field discriminator is:
+- Complete exact X683/Transsion 4.14.141 source tree: **not recovered**.
+- `make olddefconfig`: **not run**.
+- `make prepare`: **not run**.
+- `make modules_prepare`: **not run**.
+- `make Image`: **not run**.
+- `make dtbs`: **not run**.
+- replacement boot: **not tested**.
+- Android userspace boot: **not verified**.
+- hardware functionality: **not verified**.
 
-```text
-sbi+0x444  nr_wb_cp_data
-sbi+0x448  nr_wb_data
-sbi+0x44c  nr_rd_data
-sbi+0x450  nr_rd_node
-sbi+0x454  nr_rd_meta
-sbi+0x458  nr_dio_write
-sbi+0x45c  nr_dio_read
-```
+## Immediate blockers
 
-Semantics:
+1. Resolve runtime BLR targets through structure-base and initializer provenance.
+2. Match the exact Transsion/X683 vendor source revision.
+3. Recover vendor/module code outside the built-in Image.
+4. Only after those gates, import a complete source baseline and begin ARM64 build integration.
 
-```text
-any nonzero -> 0x366da4 active guarded path
-all zero    -> 0x366ee0 clean/alternate path
-gc_mode=3   -> bypass discriminator -> 0x366de4 shared stage
-```
-
-These semantics are established by the X683 statistics-copy routine at `0x375ed8..0x375f0c`.
-
-Runtime SBI writers proven:
-
-```text
-0x32b0e0 -> +0x450
-0x338f58 -> +0x450
-0x338f5c -> +0x448
-0x338f70 -> +0x458
-```
-
-All seven are zeroed during SBI initialization at `0x344efc..0x344f14`.
-
-Remaining non-initialization writers not yet proven:
-
-```text
-+0x444 +0x44c +0x454 +0x45c
-```
-
-Offset-only matches in unrelated structures are excluded.
-
-## Main policy stages
-
-Active path `0x366da4`:
-
-```text
-obj = *(sbi+0x70)
-scaled = obj[0x04] * obj[0x18] * 0x51EB851F >> 37
-current = obj[0x80]
-current < scaled AND sbi+0x434 < 8*sbi+0x3dc -> return
-otherwise -> shared stage
-```
-
-Shared stage `0x366de4`:
-
-```text
-policy(sbi,1)
-policy(sbi,3)
-nested reservation/dirty comparison
-second fixed-point check
-jiffies-domain gate
-```
-
-Clean path `0x366ee0`:
-
-```text
-nested manager child+0x2090 != 0 -> active path
-list+0x24 != 0 -> active path
-else compare 250*(sbi+0x1d0)+(sbi+0x1a0) against jiffies
-    >= jiffies -> active path
-    <  jiffies -> shared stage
-```
-
-## `Image+0x16c6980`
-
-This is now resolved with high confidence as the kernel `jiffies_64`/`jiffies` backing storage.
-
-Image bytes:
-
-```text
-08 db fe ff 00 00 00 00
-```
-
-Low 32-bit value = `-75000`.
-
-The X683 build uses HZ=250, and Linux defines:
-
-```c
-INITIAL_JIFFIES = -300 * HZ
-```
-
-so `INITIAL_JIFFIES = -75000`. Linux timer code initializes `jiffies_64` from that value. citeturn472669search0turn605116search2
-
-Consumers in `0x366cd4` are at `0x366e64` and `0x366f10`.
-
-The old neutral label `x683_gc_policy_global_16c6980` is superseded.
-
-## Terminal path
-
-At `0x366e7c`:
-
-```text
-if mount byte +0x4b9 bit7:
-    0x3e1014(stack GC/TLS object)
-    0x34e224(sbi,1)
-    0x3e1558(stack GC/TLS object)
-
-always after terminal entry:
-    0x341250(sbi->sb,1)
-    F2FS_STAT(sbi)->bg_cp_count++
-```
-
-`0x34e224` is a high-confidence `f2fs_balance_fs(sbi, true)` candidate. Historical F2FS exposes that exact API and describes it as dirty-page balancing/GC control. citeturn380364search0turn380364search1
-
-`0x341250` has the `(super_block *, int)` ABI of `f2fs_sync_fs()`, but its X683 body includes additional vendor callback/state machinery; keep the public symbol as a medium-confidence candidate only. Historical F2FS `f2fs_sync_fs()` uses that ABI. citeturn472669search7
-
-## `f2fs_stat_info` final model
-
-```text
-sbi+0x568 -> f2fs_stat_info *
-allocation size = 0x238
-```
-
-Binary-backed core:
-
-```text
-+0x14c rsvd_segs
-+0x150 overp_segs
-+0x154 dirty_count
-+0x158 node_pages
-+0x15c meta_pages
-+0x160 prefree_count
-+0x164 call_count
-+0x168 cp_count
-+0x16c bg_cp_count
-+0x170 tot_segs
-+0x174 node_segs
-+0x178 data_segs
-+0x17c free_segs
-+0x180 free_secs
-+0x184 bg_node_segs
-+0x188 bg_data_segs
-+0x18c tot_blks
-+0x190 data_blks
-+0x194 node_blks
-+0x198 bg_data_blks
-+0x19c bg_node_blks
-+0x1a0/+0x1a8 skipped_atomic_files[2]
-+0x1b0..0x1c4 curseg[6]
-+0x1c8..0x1dc cursec[6]
-+0x1e0..0x1f4 curzone[6]
-+0x1f8..0x218 SBI/meta/segment/block/inplace snapshot
-```
-
-Historical 4.14 structure ordering and debug output independently match the CP/GC/segment/block fields. citeturn906146search0turn906146search9
-
-The likely memory-accounting tail at `+0x220/+0x228/+0x230` remains unpromoted because no direct X683 stat-base store was found there.
-
-## Helper classification
-
-```text
-0x35cc18 = multi-mode boolean vendor policy predicate
-0x362c40 = heavy vendor/F2FS GC execution path surrounding the core
-0x363288 = dirty/list drain helper
-0x373108 = vendor accounting/threshold helper behind mount-bit gate
-0x3e1014 = temporary GC/TLS object init
-0x3e1558 = temporary GC/TLS object reset
-0x34e224 = f2fs_balance_fs(sbi,true) candidate, high confidence
-0x341250 = f2fs_sync_fs(sb,1) candidate, medium confidence
-```
-
-Do not replace `0x3503a8` with `0x362c40`; the former is the actual four-argument X683 `f2fs_gc()` entry.
-
-## X683-vs-stock 4.14 delta
-
-The stock-derived GC core remains recognizable historical F2FS. X683 adds:
-
-```text
-Transsion detector/state machine
-controller-driven gc_mode overrides
-five stop conditions
-I/O-activity discriminator
-fixed-point/reservation policy
-jiffies-based policy gate
-vendor dirty/list cleanup
-balance/sync side effects
-extended statistics snapshot/counters
-vendor debug/control registration
-```
-
-Therefore the correct reconstruction strategy is:
-
-```text
-historical X683-era F2FS gc.c core
-        +
-Transsion detector/controller/policy layer
-        +
-X683 statistics/control extensions
-```
-
-## Authoritative follow-up artifacts
-
-```text
-docs/reverse-engineering/x683-gc-synthesis-final-2026-08-18.md
-docs/reverse-engineering/x683-gc-final-status-2026-08-18.md
-docs/reverse-engineering/x683-stat-info-final-v2-2026-08-18.md
-docs/reverse-engineering/x683-policy-field-producer-consumer-final-v2.md
-docs/reverse-engineering/x683-vendor-delta-final-v2.md
-fs/f2fs/tran_gc_policy_semantic_reconstructed.c
-```
-
-## Remaining real unknowns
-
-```text
-non-initialization writers for +0x444/+0x44c/+0x454/+0x45c
-original semantic names for selector modes 0..5
-exact public symbol for 0x341250
-exact source names for a few vendor SBI threshold fields
-final names of +0x220/+0x228/+0x230 if they are present in the exact X683 struct
-exact source-tree integration/buildability
-```
-
-Binary control flow and the main vendor/statistics semantics are now considered high confidence.
+Unknowns remain explicit and are never promoted from inference to proof.

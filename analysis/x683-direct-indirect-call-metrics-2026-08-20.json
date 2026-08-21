@@ -1,0 +1,25 @@
+{
+  "image_sha256": "96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba",
+  "image_size": 26615820,
+  "kallsyms_sha256": "e47a91e9c933249d9902a06a9d94e6ee0f9ac0f2d33cd1fa00589fc9fed34d56",
+  "kallsyms_total_entries": 56976,
+  "kallsyms_function_entries": 56975,
+  "unique_function_starts_all": 56330,
+  "unique_kernel_function_starts": 52784,
+  "kernel_file_base": "0xffffff92d0a00800",
+  "_stext": "0xffffff92d0a80800",
+  "text_offset": "0x80000",
+  "direct_bl_instruction_sites": 295805,
+  "direct_bl_mapped_edges": 270139,
+  "direct_bl_exact_symbol_start_edges": 1772,
+  "direct_bl_unique_callers": 35034,
+  "direct_bl_caller_coverage": 0.6637238557138527,
+  "direct_bl_exact_unique_callers": 1032,
+  "indirect_blr_sites": 11692,
+  "known_symbols": {
+    "_stext": "0xffffff92d0a80800",
+    "f2fs_gc": "0xffffff92d0dd03a8",
+    "schedule": "0xffffff92d1885428",
+    "_einittext": "0xffffff92d1d7910c"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "image_bytes": 26615820,
+  "image_base": "0xffffff92d0a00000",
+  "kallsyms_entries": 56975,
+  "unique_executable_addresses": 52784,
+  "direct_bl_instructions_mapped_to_functions": 270108,
+  "exact_symbol_bl_edges": 4133,
+  "unique_caller_functions_with_direct_bl": 35080,
+  "direct_bl_caller_coverage": 0.6645953319187633,
+  "unique_target_functions_reached_by_direct_bl": 9429,
+  "indirect_blr_instructions": 11692,
+  "embedded_source_paths": 540,
+  "module_symbol_entries": 3679,
+  "reconstruction_units": 21
+}

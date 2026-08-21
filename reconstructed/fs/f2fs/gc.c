@@ -4,12 +4,15 @@
  * Reconstructed from stock call/field evidence and historical 4.14-era F2FS
  * control flow. This is not claimed to be original Transsion source.
  *
- * Target ABI:
- *     f2fs_gc(sbi, bool sync, bool background)
+ * Target X683 ABI:
+ *     f2fs_gc(sbi, bool sync, bool background, unsigned int segno)
  *
- * The stock X683 call site supplies the third argument as true. Do not replace
- * this prototype with the later segno/force variants without matching a new
- * binary revision first.
+ * The stock Transsion caller supplies:
+ *     sync       = (sbi->mount_opt.opt >> 14) & 1
+ *     background = true
+ *     segno      = NULL_SEGNO
+ *
+ * Do not replace this prototype with the older three-argument form.
  */
 
 #include "f2fs.h"
@@ -22,12 +25,17 @@
  * has_not_enough_free_secs(), prefree_segments(), free_segments(),
  * reserved_segments(), free_sections(), f2fs_write_checkpoint(), and the
  * segment-victim bookkeeping helpers.
+ *
+ * The victim-selection and migration phase is documented separately in:
+ *
+ * docs/reverse-engineering/
+ *   x683-f2fs-victim-selection-migration-delta-2026-08-19.md
  */
 
 int x683_reconstructed_f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
-                               bool background)
+                               bool background, unsigned int segno_hint)
 {
-    unsigned int segno = NULL_SEGNO;
+    unsigned int segno = segno_hint;
     int gc_type = sync ? FG_GC : BG_GC;
     int sec_freed = 0;
     int seg_freed = 0;
@@ -42,10 +50,9 @@ int x683_reconstructed_f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
     cpc.reason = __get_cp_reason(sbi);
 
     /*
-     * Stock evidence and historical F2FS agree on this state machine:
-     * validate the superblock, optionally checkpoint prefree segments,
-     * promote BG_GC to FG_GC when free sections are insufficient, select a
-     * victim, migrate it, and repeat BG_GC until enough space is available.
+     * This is a historical-X683 reconstruction of the stock GC state
+     * machine. Transsion policy enters this core through tran_do_f2fs_gc(),
+     * which may temporarily change sbi->gc_mode before this function runs.
      */
     for (;;) {
         if (unlikely(!(sbi->sb->s_flags & SB_ACTIVE))) {
@@ -111,17 +118,17 @@ int x683_reconstructed_f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
     if (sync)
         ret = sec_freed ? 0 : -EAGAIN;
 
+    (void)total_freed;
     return ret;
 }
 
 /*
- * Stock-facing ABI adapter.
- *
- * Keep the public name separate until the exact reconstructed 4.14 tree is
- * integrated. The adapter makes the ABI boundary explicit and prevents an
- * accidental call to the later four/five-argument f2fs_gc().
+ * Stock-facing four-argument X683 adapter.
+ * Keep the reconstructed symbol separate until the exact 4.14 source tree
+ * is integrated, but preserve the ABI proven by the stock X683 binary.
  */
-int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background)
+int x683_f2fs_gc(struct f2fs_sb_info *sbi, bool sync, bool background,
+                 unsigned int segno)
 {
-    return x683_reconstructed_f2fs_gc(sbi, sync, background);
+    return x683_reconstructed_f2fs_gc(sbi, sync, background, segno);
 }

@@ -17,7 +17,13 @@ This document records binary-to-source correlations. Unknown fields remain unres
 | `0x438` | `unusable_block_count` | High |
 | `0x440` | `nquota_files` | High |
 | `0x4b8` | `mount_opt.opt` | High |
+| `0x508` | `gc_mutex` | High |
 | `0x534` | `gc_mode` | High |
+| `0x538` | `next_victim_seg[0]` | High |
+| `0x53c` | `next_victim_seg[1]` | High |
+| `0x560` | `max_victim_search` | High |
+| `0x564` | `migration_granularity` | High |
+| `0x568` | `stat_info` pointer | High |
 
 ## Segment manager
 
@@ -27,25 +33,82 @@ This document records binary-to-source correlations. Unknown fields remain unres
 | `0x08` | `free_info` | High |
 | `0x10` | `dirty_info` | High |
 | `0x60` | `reserved_segments` | High |
+| `0x98` | `flush_cmd_control` | High |
+| `0xa0` | `discard_cmd_control` | High |
 
-## Evidence
+Established sizes/relationships:
 
-The stock binary's Transsion GC code obtains `free_segments` through `sbi -> sm_info -> free_info`, and obtains segment arithmetic from the `0x3d8` / `0x408` region. The Transsion wrapper extracts bit 14 of `sbi + 0x4b8` and passes it as the `sync` argument to `f2fs_gc()`. The known 4.14 F2FS layout identifies bit 14 as `F2FS_MOUNT_FORCE_FG_GC`, matching the stock behavior.
+```text
+sizeof(f2fs_sm_info)        = 0xA8
+sizeof(sit_info)            = 0xA8
+sizeof(free_segmap_info)    = 0x20
+sizeof(dirty_seglist_info)  = 0x90
+sizeof(curseg_info)         = 0x70
+curseg_info count           = 6
+curseg array size           = 0x2A0
+sm_info + 0x98              = flush_cmd_control
+sm_info + 0xa0              = discard_cmd_control
+sizeof(discard_cmd_control) = 0x20B0
+```
 
-Historical 4.14-era `f2fs_sb_info` places `gc_mode` immediately after `cur_victim_sec`. The stock GC-state access pattern at `0x534` matches that field ordering and semantics. The field is therefore resolved as `gc_mode` rather than left as an unnamed GC-state field.
+The dirty counters at `dirty_info + 0x68..0x7c` are the first six entries of `nr_dirty[8]`.
 
-The source-path fingerprint in the stock kernel identifies `fs/f2fs/f2fs.h`, `segment.h`, `segment.c`, and `super.c` as part of the original `kernel-4.14` build.
+## Whole-image integration
 
-## GC state-machine correlation
+The segment manager is connected to the stock X683 mount/checkpoint/allocation/recovery surface.
 
-The reconstructed core uses the following stock-compatible flow:
+```text
+f2fs_fill_super
+  -> f2fs_build_segment_manager
+  -> f2fs_build_node_manager
+  -> f2fs_recover_fsync_data
 
-`sync -> FG_GC/BG_GC` -> free-section check -> optional checkpoint -> BG-to-FG promotion -> victim selection through `dirty_info` -> segment migration -> freed-section accounting -> repeat/checkpoint -> victim-state reset.
+f2fs_write_checkpoint
+  -> f2fs_flush_nat_entries
+  -> f2fs_flush_sit_entries
+  -> discard/prefree handling
 
-`gc_mode` is a policy/state field and is not substituted for the mount option word at `0x4b8`.
+allocation
+  -> allocate_segment_by_default
+  -> change_curseg / new_curseg
+  -> update_sit_entry / locate_dirty_segment
 
-## Remaining work
+F2FS I/O
+  -> f2fs_submit_page_bio / f2fs_submit_page_write
+  -> block/MMC/MSDC/eMMC
+```
 
-- Match the exact X683-era helper implementations (`__get_victim`, `do_garbage_collect`, dirty-segment operations) against the stock binary.
-- Resolve the Transsion-specific GC trigger predicates around charging, USB, framebuffer, wakelock and fragmentation.
-- Match the final vendor 4.14 source revision before replacing all remaining offset-based reconstruction with normal C member accesses.
+Key addresses:
+
+```text
+f2fs_build_segment_manager = 0xffffff92d0ded138
+f2fs_allocate_data_block   = 0xffffff92d0dea3c8
+allocate_segment_by_default = 0xffffff92d0df0454
+new_curseg                 = 0xffffff92d0df07e8
+f2fs_write_checkpoint      = 0xffffff92d0dce5d0
+f2fs_build_node_manager    = 0xffffff92d0de49a8
+f2fs_recover_fsync_data    = 0xffffff92d0df0d08
+issue_discard_thread       = 0xffffff92d0df0120
+```
+
+## 2026-08-20 executable revalidation
+
+The recovered Image was independently decompressed and measured again. Image SHA-256 is `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`. The proven layout sizes remain unchanged. No new formal member names were added from the BLR recheck.
+
+The vendor GC symbols are present in kallsyms, including `tran_do_f2fs_gc`, `tran_gc_thread_func`, `tran_gc_init`, `tran_has_enough_free_segment` and `is_f2fs_fragmentation`. The proven four-argument `f2fs_gc` ABI remains unchanged.
+
+## Transsion GC context
+
+```text
+Transsion admission/policy -> tran_do_f2fs_gc -> stock f2fs_gc
+-> stock victim selection -> stock migration/accounting
+```
+
+No downstream `tran_*` migration/scoring replacement was promoted.
+
+## Remaining layout work
+
+- exact formal vendor global-state declaration/size;
+- adjacent `f2fs_sb_info` fields outside the proven region;
+- exact historical member corresponding to the SIT quantity at `sit_info + 0x10`;
+- indirect callback/proc-op container layouts.
