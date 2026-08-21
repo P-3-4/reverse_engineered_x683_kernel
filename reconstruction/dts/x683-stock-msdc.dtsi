@@ -1,0 +1,87 @@
+/*
+ * X683/H694 stock DTB storage reconstruction.
+ * Evidence reconstruction; not claimed original vendor source.
+ */
+
+&msdc0 {
+	compatible = "mediatek,msdc";
+	reg = <0x0 0x11230000 0x0 0x10000>;
+	interrupts = <0x0 0x64 0x8>;
+	index = <0x0>;
+	clk_src = <0x1>;
+	bus-width = <0x8>;
+	max-frequency = <0x0bebc200>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	no-sd;
+	no-sdio;
+	non-removable;
+	pinctl = <0x30>;
+	pinctl_hs400 = <0x31>;
+	pinctl_hs200 = <0x32>;
+	register_setting = <0x33>;
+	host_function = <0x0>;
+	bootable;
+	status = "okay";
+	vmmc-supply = <0x34>;
+	clocks = <0x21 0x4c 0x21 0x1c 0x21 0x44>;
+	clock-names = "msdc0-clock", "msdc0-hclock", "msdc0-aes-clock";
+	phandle = <0xc1>;
+};
+
+&msdc1 {
+	compatible = "mediatek,msdc";
+	reg = <0x0 0x11240000 0x0 0x10000>;
+	interrupts = <0x0 0x65 0x8>;
+	index = <0x1>;
+	clk_src = <0x2>;
+	bus-width = <0x4>;
+	max-frequency = <0x0bebc200>;
+	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	sd-uhs-ddr50;
+	no-mmc;
+	no-sdio;
+	pinctl = <0x35>;
+	pinctl_sdr104 = <0x36>;
+	pinctl_sdr50 = <0x37>;
+	pinctl_ddr50 = <0x38>;
+	register_setting = <0x39>;
+	host_function = <0x1>;
+	cd_level = <0x1>;
+	cd-gpios = <0x1e 0x4 0x0>;
+	status = "okay";
+	vmmc-supply = <0x3a>;
+	vqmmc-supply = <0x3b>;
+	clocks = <0x21 0x4d 0x21 0x1d>;
+	clock-names = "msdc1-clock", "msdc1-hclock";
+	phandle = <0xc2>;
+};
+
+&msdc0_top {
+	compatible = "mediatek,msdc0_top";
+	reg = <0x0 0x11cd0000 0x0 0x1000>;
+};
+
+&msdc1_top {
+	compatible = "mediatek,msdc1_top";
+	reg = <0x0 0x11c90000 0x0 0x1000>;
+};
+
+/* Stock pinctrl property values. Child pin names are retained as evidence. */
+&msdc0_pins_default { phandle = <0x30>; /* cmd/dat/clk/rst/ds drive-strength=0x03 */ };
+&msdc0_pins_hs400 { phandle = <0x31>; /* cmd/rst=0x03; dat/clk/ds=0x04 */ };
+&msdc0_pins_hs200 { phandle = <0x32>; /* cmd/rst=0x03; dat/clk/ds=0x04 */ };
+&msdc0_register_setting_default { phandle = <0x33>; cmd_edge=<0x0>; rdata_edge=<0x0>; wdata_edge=<0x0>; };
+&msdc1_pins_default { phandle = <0x35>; /* cmd/dat/clk drive-strength=0x03 */ };
+&msdc1_pins_sdr104 { phandle = <0x36>; /* cmd/dat/clk drive-strength=0x03 */ };
+&msdc1_pins_sdr50 { phandle = <0x37>; /* cmd/dat/clk drive-strength=0x03 */ };
+&msdc1_pins_ddr50 { phandle = <0x38>; /* cmd/dat/clk drive-strength=0x03 */ };
+&msdc1_register_setting_default { phandle = <0x39>; cmd_edge=<0x0>; rdata_edge=<0x0>; wdata_edge=<0x0>; };
+
+/* Supply phandles recovered from the stock DTB: 0x34=lDO_vemc, 0x3a=ldo_vmch, 0x3b=ldo_vmc. */
