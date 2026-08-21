@@ -8,6 +8,32 @@
 - Build date: 2021-11-05
 - Android base: Android 10
 
+## Fresh evidence consolidation — 2026-08-21
+
+### Boot kernel payload
+
+The supplied 32 MiB stock boot image has SHA-256 `a4908a19aacb463bd7028cb3a411a62a0486c458920c62cf89d42bed19c8f180`. Its boot header reports a 9,755,348-byte kernel payload at page offset `0x800`, load address `0x40080000`.
+
+The separately supplied `x683_kernel_compressed.gz` is the exact first gzip member of that boot kernel payload. Both decompress to the same 26,615,820-byte stream with SHA-256 `96513877085ad4784a17d7b51f4109650bfe90449f0e6a2b77681fa55c3ca7ba`. The boot payload contains an additional 114,696 bytes after the gzip member. See `boot-kernel-payload-reconciliation.md`.
+
+This removes an apparent kernel-artifact mismatch and establishes one canonical decompressed kernel evidence stream.
+
+### MT6768/MSDC storage path
+
+The recovered configuration is explicit:
+
+```text
+CONFIG_MTK_PLATFORM="mt6768"
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_MTK_PRO=y
+CONFIG_MTK_MMC_DEBUG=y
+```
+
+The generic `CONFIG_MMC_MTK` and `CONFIG_MMC_MTK_SDIO` paths are disabled. The stock `kallsyms` contains a large vendor MSDC implementation including request, DMA, tuning, CQHCI, PM, DT parsing and initialization symbols. Representative anchors are `msdc_do_request` at `ffffff92d15631dc`, `msdc_ops_request` at `ffffff92d1566448`, `msdc_drv_probe` at `ffffff92d1564ba0`, `msdc_of_parse` at `ffffff92d1576ce0`, and `msdc_dt_init` at `ffffff92d15772ec`.
+
+This makes MSDC/DT reconstruction a concrete next integration target rather than a generic MMC investigation. See `mt6768-storage-symbol-map.md`.
+
 ## F2FS
 
 The stock ramdisk uses `tran_gc` as an actual userdata F2FS mount option. `CONFIG_F2FS_TRAN_GC=y` is enabled in the recovered configuration.
@@ -57,8 +83,7 @@ Fresh re-analysis of the supplied stock boot image supersedes the older policy p
 - `0x34e224` is called with the SBI pointer `(sbi,1)`, not the stack object;
 - the shared policy time/global comparison uses Image `+0x16c6980`.
 
-Authoritative detail:
-`docs/reverse-engineering/x683-366cd4-byte-sanity-pass.md`.
+Authoritative detail: `docs/reverse-engineering/x683-366cd4-byte-sanity-pass.md`.
 
 ## Build strategy
 
@@ -71,3 +96,13 @@ Authoritative detail:
 7. Build with the stock-era Android Clang toolchain target.
 8. Compare symbols/control-flow to the stock image before boot testing.
 9. Package and boot-test before modernization.
+
+## Remaining blockers
+
+- exact 4.14.141 X683/Transsion kernel source baseline;
+- exact MSDC source revision and source-tree ownership;
+- X683 DTB/DTBO source reconstruction and host-node binding;
+- complete MT6768 platform driver graph;
+- unresolved vendor globals/callbacks in Transsion GC;
+- integration of reconstructed F2FS files into a complete kernel tree;
+- compiler/toolchain reproduction and final Image.gz-dtb packaging.
